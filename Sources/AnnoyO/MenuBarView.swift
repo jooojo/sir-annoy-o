@@ -331,6 +331,7 @@ struct MenuBarView: View {
                             ForEach(rollerItems) { item in
                                 let video = item.video
                                 let isCurrent = video.id == displayedCurrentVideo?.id
+                                let role = queueItemRole(for: video)
                                 GeometryReader { geometry in
                                     RollerQueueRow(
                                         index: item.logicalIndex + 1,
@@ -340,6 +341,7 @@ struct MenuBarView: View {
                                         elapsed: isCurrent ? controller.elapsed : 0,
                                         duration: isCurrent ? controller.duration : 0,
                                         audioLevel: controller.audioLevel,
+                                        role: role,
                                         togglePlaybackAction: { controller.togglePlayback() },
                                         seekAction: { controller.seek(to: $0) },
                                         playAction: { controller.playQueued(video) },
@@ -348,21 +350,18 @@ struct MenuBarView: View {
                                                 controller.playbackQueue.moveToTop(video)
                                             }
                                         },
+                                        replaceRoamingNextAction: {
+                                            controller.replaceRoamingNext(with: video)
+                                        },
+                                        replaceRoamingRecommendationAction: {
+                                            controller.replaceRoamingNextRecommendation()
+                                        },
                                         removeAction: { controller.removeFromQueue(video) },
                                         openOriginalAction: { controller.openVideo(video) }
                                     )
                                     .scaleEffect(rollerScale(for: geometry))
                                     .offset(x: rollerHorizontalInset(for: geometry))
                                     .opacity(rollerOpacity(for: geometry))
-                                    .preference(
-                                        key: RollerCenterPreferenceKey.self,
-                                        value: [RollerCenterCandidate(
-                                            id: item.id,
-                                            cycle: item.cycle,
-                                            videoID: video.id,
-                                            distance: abs(rollerPosition(for: geometry))
-                                        )]
-                                    )
                                 }
                                 .frame(height: isCurrent ? 100 : 46)
                                 .id(item.id)
@@ -379,9 +378,10 @@ struct MenuBarView: View {
                             if let playlistID {
                                 RollerScrollPositionBridge(
                                     initialOffset: playlistScrollOffsets[playlistID],
-                                    loopsAtBoundaries: RollerLoopLayout.usesCompactLoop(
+                                    cycleCount: RollerLoopLayout.cycles(
                                         forItemCount: controller.playbackQueue.items.count
-                                    ),
+                                    ).count,
+                                    cycleContentInset: rollerEndInset,
                                     onOffsetChange: { offset in
                                         rememberScrollOffset(offset, for: playlistID)
                                     },
@@ -424,13 +424,6 @@ struct MenuBarView: View {
                     }
                     .onReceive(controller.playbackQueue.currentSelectionChanged) {
                         scrollToCurrent(
-                            for: playlistID,
-                            using: scrollProxy
-                        )
-                    }
-                    .onPreferenceChange(RollerCenterPreferenceKey.self) { candidates in
-                        recenterLoopIfNeeded(
-                            candidates,
                             for: playlistID,
                             using: scrollProxy
                         )
@@ -620,6 +613,22 @@ struct MenuBarView: View {
         displayedCurrentVideo ?? controller.playbackQueue.current
     }
 
+    private func queueItemRole(for video: VideoSearchResult) -> RollerQueueItemRole {
+        guard controller.playbackQueue.isRoaming,
+              let currentID = controller.playbackQueue.currentID,
+              let currentIndex = controller.playbackQueue.items.firstIndex(where: {
+                  $0.id == currentID
+              }),
+              let videoIndex = controller.playbackQueue.items.firstIndex(where: {
+                  $0.id == video.id
+              })
+        else { return .regular }
+
+        if videoIndex < currentIndex { return .roamingPrevious }
+        if videoIndex > currentIndex { return .roamingNext }
+        return .roamingCurrent
+    }
+
     private var rollerItems: [RollerLoopItem] {
         let items = controller.playbackQueue.items
         guard !items.isEmpty else { return [] }
@@ -662,7 +671,12 @@ struct MenuBarView: View {
         animated: Bool = true
     ) {
         guard let videoID = rollerAnchorVideo?.id else { return }
-        let id = loopID(videoID: videoID, cycle: 1)
+        let id = loopID(
+            videoID: videoID,
+            cycle: RollerLoopLayout.middleCycle(
+                forItemCount: controller.playbackQueue.items.count
+            )
+        )
         DispatchQueue.main.async {
             if animated {
                 withAnimation(.easeInOut(duration: 0.28)) {
@@ -694,10 +708,11 @@ struct MenuBarView: View {
         guard !isRollerAnimating else { return }
 
         isRollerAnimating = true
-        let currentID = loopID(videoID: targetVideoID, cycle: 1)
-        let flybyCycle = RollerLoopLayout.usesCompactLoop(
+        let middleCycle = RollerLoopLayout.middleCycle(
             forItemCount: controller.playbackQueue.items.count
-        ) ? 1 : 2
+        )
+        let currentID = loopID(videoID: targetVideoID, cycle: middleCycle)
+        let flybyCycle = middleCycle + 1
         let flybyID = controller.playbackQueue.items
             .last(where: { $0.id != targetVideoID })
             .map { loopID(videoID: $0.id, cycle: flybyCycle) }
@@ -737,25 +752,6 @@ struct MenuBarView: View {
                 using: proxy,
                 targetVideoID: currentVideoID
             )
-        }
-    }
-
-    private func recenterLoopIfNeeded(
-        _ candidates: [RollerCenterCandidate],
-        for playlistID: UUID?,
-        using proxy: ScrollViewProxy
-    ) {
-        guard controller.playbackQueue.savedPlaylistID == playlistID,
-              controller.playbackQueue.items.count > 1,
-              !isRollerAnimating,
-              restoringScrollForPlaylistID != playlistID,
-              let nearest = candidates.min(by: { $0.distance < $1.distance }),
-              nearest.cycle != 1
-        else { return }
-
-        let middleID = loopID(videoID: nearest.videoID, cycle: 1)
-        DispatchQueue.main.async {
-            proxy.scrollTo(middleID, anchor: .center)
         }
     }
 
@@ -809,34 +805,25 @@ private struct RollerLoopItem: Identifiable {
     let video: VideoSearchResult
 }
 
-private struct RollerCenterCandidate: Equatable {
-    let id: String
-    let cycle: Int
-    let videoID: String
-    let distance: CGFloat
-}
-
-private struct RollerCenterPreferenceKey: PreferenceKey {
-    static let defaultValue: [RollerCenterCandidate] = []
-
-    static func reduce(
-        value: inout [RollerCenterCandidate],
-        nextValue: () -> [RollerCenterCandidate]
-    ) {
-        value.append(contentsOf: nextValue())
-    }
+private enum RollerQueueItemRole: Equatable {
+    case regular
+    case roamingPrevious
+    case roamingCurrent
+    case roamingNext
 }
 
 private struct RollerScrollPositionBridge: NSViewRepresentable {
     let initialOffset: CGFloat?
-    let loopsAtBoundaries: Bool
+    let cycleCount: Int
+    let cycleContentInset: CGFloat
     let onOffsetChange: (CGFloat) -> Void
     let onRestoreCompleted: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             initialOffset: initialOffset,
-            loopsAtBoundaries: loopsAtBoundaries,
+            cycleCount: cycleCount,
+            cycleContentInset: cycleContentInset,
             onOffsetChange: onOffsetChange,
             onRestoreCompleted: onRestoreCompleted
         )
@@ -859,7 +846,8 @@ private struct RollerScrollPositionBridge: NSViewRepresentable {
 
     func updateNSView(_ nsView: RollerScrollProbeView, context: Context) {
         context.coordinator.update(
-            loopsAtBoundaries: loopsAtBoundaries,
+            cycleCount: cycleCount,
+            cycleContentInset: cycleContentInset,
             onOffsetChange: onOffsetChange,
             onRestoreCompleted: onRestoreCompleted
         )
@@ -884,27 +872,32 @@ private struct RollerScrollPositionBridge: NSViewRepresentable {
         private var onOffsetChange: (CGFloat) -> Void
         private var onRestoreCompleted: () -> Void
         private var didApplyInitialOffset = false
-        private var loopsAtBoundaries: Bool
-        private var scrollWheelMonitor: RollerScrollWheelMonitorToken?
+        private var cycleCount: Int
+        private var cycleContentInset: CGFloat
+        private var isRecentering = false
 
         init(
             initialOffset: CGFloat?,
-            loopsAtBoundaries: Bool,
+            cycleCount: Int,
+            cycleContentInset: CGFloat,
             onOffsetChange: @escaping (CGFloat) -> Void,
             onRestoreCompleted: @escaping () -> Void
         ) {
             self.initialOffset = initialOffset
-            self.loopsAtBoundaries = loopsAtBoundaries
+            self.cycleCount = cycleCount
+            self.cycleContentInset = cycleContentInset
             self.onOffsetChange = onOffsetChange
             self.onRestoreCompleted = onRestoreCompleted
         }
 
         func update(
-            loopsAtBoundaries: Bool,
+            cycleCount: Int,
+            cycleContentInset: CGFloat,
             onOffsetChange: @escaping (CGFloat) -> Void,
             onRestoreCompleted: @escaping () -> Void
         ) {
-            self.loopsAtBoundaries = loopsAtBoundaries
+            self.cycleCount = cycleCount
+            self.cycleContentInset = cycleContentInset
             self.onOffsetChange = onOffsetChange
             self.onRestoreCompleted = onRestoreCompleted
         }
@@ -922,7 +915,6 @@ private struct RollerScrollPositionBridge: NSViewRepresentable {
                     name: NSView.boundsDidChangeNotification,
                     object: enclosingScrollView.contentView
                 )
-                installScrollWheelMonitor()
             }
 
             guard !didApplyInitialOffset else { return }
@@ -947,16 +939,39 @@ private struct RollerScrollPositionBridge: NSViewRepresentable {
                     object: scrollView.contentView
                 )
             }
-            if let scrollWheelMonitor {
-                NSEvent.removeMonitor(scrollWheelMonitor.value)
-                self.scrollWheelMonitor = nil
-            }
             scrollView = nil
         }
 
         @objc private func boundsDidChange(_ notification: Notification) {
             guard let clipView = notification.object as? NSClipView else { return }
+            recenterIfNeeded(clipView)
             onOffsetChange(clipView.bounds.origin.y)
+        }
+
+        private func recenterIfNeeded(_ clipView: NSClipView) {
+            guard !isRecentering,
+                  cycleCount > 1,
+                  let scrollView,
+                  let documentView = scrollView.documentView
+            else { return }
+
+            guard let targetY = RollerLoopLayout.recenteredOffset(
+                currentOffset: clipView.bounds.origin.y,
+                viewportHeight: clipView.bounds.height,
+                documentMinimumY: documentView.bounds.minY,
+                documentHeight: documentView.bounds.height,
+                cycleContentInset: cycleContentInset,
+                cycleCount: cycleCount
+            ) else { return }
+            isRecentering = true
+            clipView.scroll(
+                to: NSPoint(
+                    x: clipView.bounds.origin.x,
+                    y: targetY
+                )
+            )
+            scrollView.reflectScrolledClipView(clipView)
+            isRecentering = false
         }
 
         private func restore(_ offset: CGFloat, in scrollView: NSScrollView) {
@@ -986,65 +1001,9 @@ private struct RollerScrollPositionBridge: NSViewRepresentable {
             onOffsetChange(scrollView.contentView.bounds.origin.y)
         }
 
-        private func installScrollWheelMonitor() {
-            guard scrollWheelMonitor == nil else { return }
-            let monitor = NSEvent.addLocalMonitorForEvents(
-                matching: .scrollWheel
-            ) { [weak self] event in
-                self?.wrapCompactRollerIfNeeded(for: event)
-                return event
-            }
-            if let monitor {
-                scrollWheelMonitor = RollerScrollWheelMonitorToken(value: monitor)
-            }
-        }
-
-        private func wrapCompactRollerIfNeeded(for event: NSEvent) {
-            guard loopsAtBoundaries,
-                  let scrollView,
-                  event.window === scrollView.window
-            else { return }
-
-            let location = scrollView.convert(event.locationInWindow, from: nil)
-            guard scrollView.bounds.contains(location) else { return }
-
-            let documentBounds = scrollView.documentView?.bounds ?? .zero
-            let viewportHeight = scrollView.contentView.bounds.height
-            let minimumOffset = documentBounds.minY
-            let maximumOffset = max(
-                minimumOffset,
-                documentBounds.maxY - viewportHeight
-            )
-            guard let targetOffset = RollerLoopLayout.boundaryWrapTarget(
-                currentOffset: scrollView.contentView.bounds.origin.y,
-                minimumOffset: minimumOffset,
-                maximumOffset: maximumOffset,
-                scrollingDeltaY: event.scrollingDeltaY
-            ) else { return }
-
-            scrollView.contentView.scroll(
-                to: NSPoint(
-                    x: scrollView.contentView.bounds.origin.x,
-                    y: targetOffset
-                )
-            )
-            scrollView.reflectScrolledClipView(scrollView.contentView)
-        }
-
         deinit {
-            if let scrollWheelMonitor {
-                NSEvent.removeMonitor(scrollWheelMonitor.value)
-            }
             NotificationCenter.default.removeObserver(self)
         }
-    }
-}
-
-private final class RollerScrollWheelMonitorToken: @unchecked Sendable {
-    let value: Any
-
-    init(value: Any) {
-        self.value = value
     }
 }
 
@@ -1163,10 +1122,13 @@ private struct RollerQueueRow: View {
     let elapsed: TimeInterval
     let duration: TimeInterval
     let audioLevel: AudioReactiveLevel
+    let role: RollerQueueItemRole
     let togglePlaybackAction: () -> Void
     let seekAction: (TimeInterval) -> Void
     let playAction: () -> Void
     let pinAction: () -> Void
+    let replaceRoamingNextAction: () -> Void
+    let replaceRoamingRecommendationAction: () -> Void
     let removeAction: () -> Void
     let openOriginalAction: () -> Void
     @State private var isDeleting = false
@@ -1189,7 +1151,9 @@ private struct RollerQueueRow: View {
             }
         }
         .contextMenu {
-            Button("在 Bilibili 打开", systemImage: "safari", action: openOriginalAction)
+            if role == .regular {
+                Button("在 Bilibili 打开", systemImage: "safari", action: openOriginalAction)
+            }
         }
     }
 
@@ -1201,22 +1165,25 @@ private struct RollerQueueRow: View {
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    HStack(spacing: 4) {
-                        Button(action: togglePlaybackAction) {
-                            Group {
-                                if playbackState == .resolving {
-                                    ProgressView().controlSize(.mini)
-                                } else {
-                                    Image(systemName: playbackState.showsPauseControl ? "pause.fill" : "play.fill")
-                                        .font(.system(size: 9, weight: .bold))
-                                }
+                    Button(action: togglePlaybackAction) {
+                        Group {
+                            if playbackState == .resolving {
+                                ProgressView().controlSize(.mini)
+                            } else {
+                                Image(systemName: playbackState.showsPauseControl ? "pause.fill" : "play.fill")
+                                    .font(.system(size: 9, weight: .bold))
                             }
-                            .frame(width: 20, height: 20)
                         }
-                        .buttonStyle(.plain)
-                        .help(playbackState.showsPauseControl ? "暂停" : "播放")
-                        .disabled(playbackState == .resolving)
+                        .frame(width: 20, height: 20)
+                    }
+                    .buttonStyle(.plain)
+                    .help(playbackState.showsPauseControl ? "暂停" : "播放")
+                    .disabled(playbackState == .resolving)
+                    .foregroundStyle(.secondary)
+                    .opacity(isHovering ? 1 : 0)
+                    .allowsHitTesting(isHovering)
 
+                    if role == .regular {
                         Button(action: beginDeletion) {
                             Image(systemName: "xmark")
                                 .font(.system(size: 9, weight: .bold))
@@ -1225,10 +1192,10 @@ private struct RollerQueueRow: View {
                         .buttonStyle(.plain)
                         .help("删除当前播放")
                         .disabled(isDeleting)
+                        .foregroundStyle(.secondary)
+                        .opacity(isHovering ? 1 : 0)
+                        .allowsHitTesting(isHovering)
                     }
-                    .foregroundStyle(.secondary)
-                    .opacity(isHovering ? 1 : 0)
-                    .allowsHitTesting(isHovering)
                 }
 
                 Text(video.title)
@@ -1260,7 +1227,11 @@ private struct RollerQueueRow: View {
             }
             .contentShape(Rectangle())
             .simultaneousGesture(scrubGesture(width: geometry.size.width))
-            .help("长按后左右拖动以调整播放位置")
+            .help(
+                role == .regular
+                    ? "长按后左右拖动以调整播放位置"
+                    : (playbackState.showsPauseControl ? "暂停" : "播放")
+            )
             .overlay(alignment: .top) {
                 GlassContentDivider()
             }
@@ -1283,6 +1254,7 @@ private struct RollerQueueRow: View {
     }
 
     private var canScrub: Bool {
+        guard role == .regular else { return false }
         guard duration.isFinite, duration > 0 else { return false }
         return switch playbackState {
         case .playing, .paused, .buffering:
@@ -1352,15 +1324,35 @@ private struct RollerQueueRow: View {
                 Spacer(minLength: 2)
             }
 
-            HStack(spacing: 5) {
-                Button(action: playAction) {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 9, weight: .bold))
-                        .frame(width: 20, height: 28)
-                }
-                .buttonStyle(.plain)
-                .help("立即播放")
+            queuedActions
+            .foregroundStyle(.secondary)
+            .opacity(isHovering ? 1 : 0)
+            .allowsHitTesting(isHovering)
+        }
+        .padding(.horizontal, 7)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .bottom) {
+            GlassContentDivider()
+                .padding(.leading, 35)
+        }
+        .offset(x: isDeleting ? 24 : 0)
+        .opacity(isDeleting ? 0 : 1)
+        .animation(.easeOut(duration: 0.16), value: isDeleting)
+    }
 
+    @ViewBuilder
+    private var queuedActions: some View {
+        HStack(spacing: 5) {
+            Button(action: playAction) {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 9, weight: .bold))
+                    .frame(width: 20, height: 28)
+            }
+            .buttonStyle(.plain)
+            .help("立即播放")
+
+            switch role {
+            case .regular:
                 Button(action: pinAction) {
                     Image(systemName: "arrow.up.to.line")
                         .font(.system(size: 9, weight: .bold))
@@ -1377,20 +1369,29 @@ private struct RollerQueueRow: View {
                 .buttonStyle(.plain)
                 .help("从播放列表移除")
                 .disabled(isDeleting)
+
+            case .roamingPrevious:
+                Button(action: replaceRoamingNextAction) {
+                    Image(systemName: "arrow.right.to.line")
+                        .font(.system(size: 9, weight: .bold))
+                        .frame(width: 19, height: 28)
+                }
+                .buttonStyle(.plain)
+                .help("替换成下一首")
+
+            case .roamingNext:
+                Button(action: replaceRoamingRecommendationAction) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 9, weight: .bold))
+                        .frame(width: 19, height: 28)
+                }
+                .buttonStyle(.plain)
+                .help("换一首推荐")
+
+            case .roamingCurrent:
+                EmptyView()
             }
-            .foregroundStyle(.secondary)
-            .opacity(isHovering ? 1 : 0)
-            .allowsHitTesting(isHovering)
         }
-        .padding(.horizontal, 7)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay(alignment: .bottom) {
-            GlassContentDivider()
-                .padding(.leading, 35)
-        }
-        .offset(x: isDeleting ? 24 : 0)
-        .opacity(isDeleting ? 0 : 1)
-        .animation(.easeOut(duration: 0.16), value: isDeleting)
     }
 
     private func beginDeletion() {

@@ -63,6 +63,10 @@ actor BilibiliService {
     }
 
     func topRelatedVideo(for video: VideoSearchResult) async throws -> VideoSearchResult? {
+        (try await relatedVideos(for: video)).first
+    }
+
+    func relatedVideos(for video: VideoSearchResult) async throws -> [VideoSearchResult] {
         try await bootstrapDeviceIfNeeded()
         let url = apiURL(
             path: "/x/web-interface/archive/related",
@@ -74,22 +78,24 @@ actor BilibiliService {
         )
         let response: RelatedVideosResponse = try await request(url, referer: video.webURL)
         try validate(response.code, response.message)
-        guard let item = response.data?.first,
-              !item.bvid.isEmpty,
-              item.bvid != video.bvid
-        else { return nil }
-        return VideoSearchResult(
-            bvid: item.bvid,
-            title: (item.title ?? "Bilibili 视频").removingHTML,
-            creator: item.owner?.name ?? "",
-            description: (item.description ?? "").removingHTML,
-            coverURL: item.picture.flatMap(Self.normalizedImageURL),
-            durationText: Self.durationText(item.duration ?? 0),
-            playCountText: Self.compactCount(item.statistics?.viewCount),
-            publishedAt: item.publishedAt.map {
-                Date(timeIntervalSince1970: TimeInterval($0))
-            }
-        )
+        var seenIDs = Set([video.id])
+        return (response.data ?? []).compactMap { item in
+            guard !item.bvid.isEmpty,
+                  seenIDs.insert(item.bvid).inserted
+            else { return nil }
+            return VideoSearchResult(
+                bvid: item.bvid,
+                title: (item.title ?? "Bilibili 视频").removingHTML,
+                creator: item.owner?.name ?? "",
+                description: (item.description ?? "").removingHTML,
+                coverURL: item.picture.flatMap(Self.normalizedImageURL),
+                durationText: Self.durationText(item.duration ?? 0),
+                playCountText: Self.compactCount(item.statistics?.viewCount),
+                publishedAt: item.publishedAt.map {
+                    Date(timeIntervalSince1970: TimeInterval($0))
+                }
+            )
+        }
     }
 
     func videoParts(for video: VideoSearchResult) async throws -> [VideoPart] {

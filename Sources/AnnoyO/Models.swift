@@ -76,9 +76,17 @@ enum RoamingPlaylist {
             return normalized(items: candidates, currentID: nil)
         }
 
-        let previous = currentIndex > items.startIndex ? items[currentIndex - 1] : nil
+        let previous = currentIndex > items.startIndex
+            ? items[currentIndex - 1]
+            : nil
         let current = items[currentIndex]
-        let windowItems = [previous, current, video].compactMap { $0 }
+        let retainedPrevious = previous?.id == video.id ? nil : previous
+        let windowItems = [retainedPrevious, current, video]
+            .compactMap { $0 }
+            .reduce(into: [VideoSearchResult]()) { result, candidate in
+                guard !result.contains(where: { $0.id == candidate.id }) else { return }
+                result.append(candidate)
+            }
         return Window(items: windowItems, currentID: currentID)
     }
 

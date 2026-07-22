@@ -41,9 +41,10 @@ enum AnnoyOChecks {
         )
         verifyPlaybackQueuePersistence()
         verifyRoamingWindow()
-        verifyCompactRollerLayout()
+        verifyRollerLoopLayout()
         verifySavedPlaylists()
         verifyPlaylistBrowsingDoesNotInterruptPlayback()
+        verifyShuffleExcludesTwoMostRecentItems()
         verifyAudioFeatureExtractor()
         verifyControllerQueueRemoval()
         verifyAudioCacheStore()
@@ -375,38 +376,107 @@ enum AnnoyOChecks {
             queue.insertRoamingNextIfMissing(recommended, after: current.id),
             "playing a different roaming item refreshes its recommendation slot"
         )
+        check(
+            queue.replaceRoamingNext(with: searched),
+            "roaming previous item can replace the next slot"
+        )
+        check(
+            queue.items == [current, searched],
+            "moving roaming previous to next keeps the window unique"
+        )
     }
 
-    private static func verifyCompactRollerLayout() {
+    private static func verifyRollerLoopLayout() {
         let itemCount = 3
         let renderedOccurrenceCount = RollerLoopLayout
             .cycles(forItemCount: itemCount)
             .count * itemCount
         check(
-            renderedOccurrenceCount == itemCount,
-            "compact roller renders each queue item only once"
+            renderedOccurrenceCount == 21,
+            "sparse roller repeats enough complete cycles to hide its boundaries"
         )
         check(
-            RollerLoopLayout.boundaryWrapTarget(
+            RollerLoopLayout.middleCycle(forItemCount: itemCount) == 3,
+            "sparse roller recenters on an identical middle cycle"
+        )
+        check(
+            RollerLoopLayout.cycles(forItemCount: 1).count == 7,
+            "single-item roller still has a continuous repeated surface"
+        )
+        check(
+            RollerLoopLayout.recenteredOffset(
                 currentOffset: 0,
-                minimumOffset: 0,
-                maximumOffset: 120,
-                scrollingDeltaY: 4
-            ) == 120,
-            "compact roller wraps upward from the first item to the last"
+                viewportHeight: 270,
+                documentMinimumY: 0,
+                documentHeight: 870,
+                cycleContentInset: 85,
+                cycleCount: 7
+            ) == 300,
+            "top boundary moves by whole cycles without changing the visible position"
         )
         check(
-            RollerLoopLayout.boundaryWrapTarget(
-                currentOffset: 120,
-                minimumOffset: 0,
-                maximumOffset: 120,
-                scrollingDeltaY: -4
-            ) == 0,
-            "compact roller wraps downward from the last item to the first"
+            RollerLoopLayout.recenteredOffset(
+                currentOffset: 600,
+                viewportHeight: 270,
+                documentMinimumY: 0,
+                documentHeight: 870,
+                cycleContentInset: 85,
+                cycleCount: 7
+            ) == 300,
+            "bottom boundary moves by whole cycles without changing the visible position"
         )
         check(
-            RollerLoopLayout.cycles(forItemCount: 7) == [0, 1, 2],
-            "long queues keep the seamless three-cycle roller"
+            RollerLoopLayout.recenteredOffset(
+                currentOffset: 300,
+                viewportHeight: 270,
+                documentMinimumY: 0,
+                documentHeight: 870,
+                cycleContentInset: 85,
+                cycleCount: 7
+            ) == nil,
+            "middle cycle remains untouched"
+        )
+        check(
+            RollerLoopLayout.cycles(forItemCount: 7) == [0, 1, 2]
+                && RollerLoopLayout.middleCycle(forItemCount: 7) == 1,
+            "long queues retain the seamless three-cycle middle anchor"
+        )
+    }
+
+    private static func verifyShuffleExcludesTwoMostRecentItems() {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockBilibiliURLProtocol.self]
+        let queue = PlaybackQueue(storageURL: temporaryQueueURL())
+        let controller = PlayerController(
+            service: BilibiliService(session: URLSession(configuration: configuration)),
+            playbackQueue: queue,
+            audioCache: temporaryAudioCache(),
+            restoresQueue: false,
+            savedPlaylists: temporarySavedPlaylistStore()
+        )
+        let first = fixtureVideo(id: "BV1SHUFFLEA", title: "随机 A")
+        let second = fixtureVideo(id: "BV1SHUFFLEB", title: "随机 B")
+        let third = fixtureVideo(id: "BV1SHUFFLEC", title: "随机 C")
+
+        controller.createPlaylist()
+        queue.enqueue(first)
+        queue.enqueue(second)
+        queue.enqueue(third)
+        controller.playQueued(first)
+        controller.cyclePlaybackOrderMode()
+        controller.cyclePlaybackOrderMode()
+
+        controller.playNext()
+        let firstRandom = controller.currentVideo
+        controller.playNext()
+        let secondRandom = controller.currentVideo
+        check(
+            firstRandom != nil
+                && secondRandom != nil
+                && firstRandom != first
+                && secondRandom != firstRandom
+                && secondRandom != first,
+            "shuffle excludes both current and immediately previous playback"
         )
     }
 
@@ -465,18 +535,21 @@ enum AnnoyOChecks {
             "shuffle playback mode does not reorder the playlist"
         )
         controller.playNext()
-        check(controller.currentVideo == next, "automatic next follows the playback source playlist")
+        check(
+            controller.currentVideo == first,
+            "two-item shuffle does not immediately return to the previous playback"
+        )
         check(queue.savedPlaylistID == newPlaylistID, "automatic next does not change the displayed playlist")
 
         check(controller.returnToPlayingPlaylist(), "return-to-current finds the playback source playlist")
         check(queue.savedPlaylistID == sourcePlaylistID, "return-to-current switches back to the playback list")
         check(controller.playlistTransitionDirection == -1, "return-to-current preserves list slide direction")
-        check(queue.current == next, "return-to-current restores the currently playing row")
+        check(queue.current == first, "return-to-current restores the currently playing row")
 
         controller.switchPlaylist(by: 1)
         check(queue.savedPlaylistID == newPlaylistID, "playlist navigation changes the displayed playlist")
         check(controller.playlistTransitionDirection == 1, "next playlist uses a forward slide direction")
-        check(controller.currentVideo == next, "playlist navigation leaves playback untouched")
+        check(controller.currentVideo == first, "playlist navigation leaves playback untouched")
 
         let restoredQueue = PlaybackQueue(storageURL: queueURL)
         let restoredController = PlayerController(
@@ -487,7 +560,7 @@ enum AnnoyOChecks {
             savedPlaylists: SavedPlaylistStore(storageURL: storeURL)
         )
         check(restoredQueue.savedPlaylistID == newPlaylistID, "restart preserves the displayed playlist")
-        check(restoredController.currentVideo == next, "restart restores audio from the playback source")
+        check(restoredController.currentVideo == first, "restart restores audio from the playback source")
         check(restoredController.playingPlaylistID == sourcePlaylistID, "restart preserves the playback source")
 
         restoredController.playQueued(other)
@@ -652,12 +725,19 @@ enum AnnoyOChecks {
         let related = try await service.topRelatedVideo(
             for: fixtureVideo(id: "BV1RELATEDSOURCE", title: "推荐来源")
         )
+        let relatedList = try await service.relatedVideos(
+            for: fixtureVideo(id: "BV1RELATEDSOURCE", title: "推荐来源")
+        )
         check(related?.id == "BV1RELATEDTOP", "related API uses Bilibili top 1")
         check(
             related?.creator == "推荐 UP"
                 && related?.durationText == "2:40"
                 && related?.coverURL?.scheme == "https",
             "related top 1 maps into the queue model"
+        )
+        check(
+            relatedList.map(\.id) == ["BV1RELATEDTOP", "BV1RELATEDSECOND", "BV1RELATEDTHIRD"],
+            "related API preserves the recommendation list order"
         )
     }
 
@@ -710,6 +790,11 @@ enum AnnoyOChecks {
             queue.savedPlaylistID == RoamingPlaylist.id,
             "first playback stays in the roaming system playlist"
         )
+        controller.replaceRoamingNextRecommendation()
+        check(
+            RoamingPlaylist.next(in: queue.items, currentID: source.id)?.id == "BV1RELATEDSECOND",
+            "roaming next cycles forward in the recommendation list"
+        )
         controller.enqueue(searched)
         check(
             RoamingPlaylist.next(in: queue.items, currentID: source.id) == searched,
@@ -725,7 +810,17 @@ enum AnnoyOChecks {
         try await waitUntil {
             RoamingPlaylist.next(in: queue.items, currentID: searched.id)?.id == "BV1RELATEDTOP"
         }
-        check(queue.items.count == 3, "new roaming playback refreshes Bilibili top 1 as next")
+        check(queue.items.count == 3, "new roaming playback immediately refreshes its next item")
+        controller.replaceRoamingNextRecommendation()
+        check(
+            RoamingPlaylist.next(in: queue.items, currentID: searched.id)?.id == "BV1RELATEDSECOND",
+            "new roaming playback owns a fresh recommendation cursor"
+        )
+        controller.replaceRoamingNext(with: source)
+        check(
+            queue.items == [searched, source],
+            "roaming previous action replaces next without leaving a delete-only history row"
+        )
     }
 
     private static func waitUntil(

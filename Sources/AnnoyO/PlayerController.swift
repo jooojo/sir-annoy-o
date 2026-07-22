@@ -46,9 +46,14 @@ final class PlayerController: ObservableObject {
     private var playbackIntent = false
     private var playbackBaseline: TimeInterval = 0
     private var lastPersistedPosition: TimeInterval = 0
+    private var lastPlayedVideoID: String?
     private var shufflePlaylistID: UUID?
-    private var shuffleOrder: [String] = []
+    private var shuffleHistory: [String] = []
     private var shuffleCursor = 0
+    private var roamingRecommendationSourceID: String?
+    private var roamingRecommendations: [VideoSearchResult] = []
+    private var roamingRecommendationCursor = -1
+    private var pendingRoamingRecommendationReplacementSourceID: String?
 
     convenience init(service: BilibiliService = .shared) {
         self.init(
@@ -213,6 +218,33 @@ final class PlayerController: ObservableObject {
     func enqueue(_ video: VideoSearchResult) {
         playbackQueue.enqueue(video)
         notice = playbackQueue.isRoaming ? "已设为漫游下一首" : "已加入播放队列"
+    }
+
+    func replaceRoamingNext(with video: VideoSearchResult) {
+        guard playbackQueue.replaceRoamingNext(with: video) else { return }
+        roamingRecommendationCursor = roamingRecommendations.firstIndex(where: {
+            $0.id == video.id
+        }) ?? -1
+        notice = "已替换漫游下一首"
+    }
+
+    func replaceRoamingNextRecommendation() {
+        guard playbackQueue.isRoaming,
+              let currentID = playbackQueue.currentID,
+              currentID == roamingRecommendationSourceID
+        else {
+            pendingRoamingRecommendationReplacementSourceID = playbackQueue.currentID
+            requestRoamingRecommendationIfNeeded(for: playbackQueue.current)
+            return
+        }
+
+        let excludedIDs = Set(playbackQueue.items.map(\.id))
+        guard let candidate = nextRoamingRecommendation(excluding: excludedIDs),
+              playbackQueue.replaceRoamingNext(with: candidate.video)
+        else { return }
+
+        roamingRecommendationCursor = candidate.index
+        notice = "已换一首推荐"
     }
 
     func playQueued(_ video: VideoSearchResult) {
@@ -494,6 +526,7 @@ final class PlayerController: ObservableObject {
         elapsed = 0
         duration = 0
         lastPersistedPosition = 0
+        lastPlayedVideoID = nil
         playbackState = .idle
         updateNowPlaying()
     }
@@ -502,6 +535,7 @@ final class PlayerController: ObservableObject {
         if playingPlaylistID != playlistID {
             clearShuffleOrder()
             relatedVideoTask?.cancel()
+            clearRoamingRecommendations()
         }
         playingPlaylistID = playlistID
         playbackQueue.updatePlaybackSourcePlaylistID(playlistID)
@@ -553,26 +587,22 @@ final class PlayerController: ObservableObject {
             return
         }
         shufflePlaylistID = playingPlaylistID
-        shuffleOrder = [video.id] + playingPlaylistItems
-            .filter { $0.id != video.id }
-            .map(\.id)
-            .shuffled()
+        shuffleHistory = [video.id]
         shuffleCursor = 0
     }
 
     private func clearShuffleOrder() {
         shufflePlaylistID = nil
-        shuffleOrder = []
+        shuffleHistory = []
         shuffleCursor = 0
     }
 
     private func reconcileShuffleOrder(currentVideo: VideoSearchResult) {
         let itemIDs = Set(playingPlaylistItems.map(\.id))
-        let orderIDs = Set(shuffleOrder)
         guard shufflePlaylistID == playingPlaylistID,
-              itemIDs == orderIDs,
-              shuffleOrder.indices.contains(shuffleCursor),
-              shuffleOrder[shuffleCursor] == currentVideo.id
+              shuffleHistory.allSatisfy(itemIDs.contains),
+              shuffleHistory.indices.contains(shuffleCursor),
+              shuffleHistory[shuffleCursor] == currentVideo.id
         else {
             resetShuffleOrder(startingAt: currentVideo)
             return
@@ -581,20 +611,21 @@ final class PlayerController: ObservableObject {
 
     private func nextShuffledVideo(after currentVideo: VideoSearchResult) -> VideoSearchResult? {
         reconcileShuffleOrder(currentVideo: currentVideo)
-        if !shuffleOrder.indices.contains(shuffleCursor + 1) {
-            resetShuffleOrder(startingAt: currentVideo)
+        let candidates = playingPlaylistItems.filter {
+            $0.id != currentVideo.id && $0.id != lastPlayedVideoID
         }
-        guard shuffleOrder.indices.contains(shuffleCursor + 1) else { return nil }
+        guard let next = candidates.randomElement() else { return nil }
+        shuffleHistory = Array(shuffleHistory.prefix(shuffleCursor + 1))
+        shuffleHistory.append(next.id)
         shuffleCursor += 1
-        let nextID = shuffleOrder[shuffleCursor]
-        return playingPlaylistItems.first(where: { $0.id == nextID })
+        return next
     }
 
     private func previousShuffledVideo(before currentVideo: VideoSearchResult) -> VideoSearchResult? {
         reconcileShuffleOrder(currentVideo: currentVideo)
         guard shuffleCursor > 0 else { return nil }
         shuffleCursor -= 1
-        let previousID = shuffleOrder[shuffleCursor]
+        let previousID = shuffleHistory[shuffleCursor]
         return playingPlaylistItems.first(where: { $0.id == previousID })
     }
 
@@ -644,7 +675,9 @@ final class PlayerController: ObservableObject {
     var canGoNext: Bool {
         currentParts.indices.contains(currentPartIndex + 1)
             || (playbackOrderMode == .shuffle
-                ? playingPlaylistItems.contains(where: { $0.id != currentVideo?.id })
+                ? playingPlaylistItems.contains(where: {
+                    $0.id != currentVideo?.id && $0.id != lastPlayedVideoID
+                })
                 : currentVideo.flatMap {
                     adjacentPlayingVideo(
                         to: $0,
@@ -681,12 +714,16 @@ final class PlayerController: ObservableObject {
         autoplay: Bool,
         resumeAt: TimeInterval = 0
     ) {
+        let startsNewVideo = currentVideo?.id != video.id
         loadTask?.cancel()
         player.pause()
         player.replaceCurrentItem(with: nil)
         currentResourceLoader = nil
         audioLevel.reset()
         playbackIntent = autoplay
+        if startsNewVideo, let currentVideo {
+            lastPlayedVideoID = currentVideo.id
+        }
         currentVideo = video
         playbackState = .resolving
         elapsed = max(0, resumeAt)
@@ -700,7 +737,9 @@ final class PlayerController: ObservableObject {
         }
         notice = nil
         updateNowPlaying()
-        requestRoamingRecommendationIfNeeded(for: video)
+        if startsNewVideo || roamingRecommendationSourceID != video.id {
+            requestRoamingRecommendationIfNeeded(for: video)
+        }
 
         loadTask = Task { [weak self, service] in
             do {
@@ -778,32 +817,40 @@ final class PlayerController: ObservableObject {
         for video: VideoSearchResult? = nil
     ) {
         let requestedVideo = video ?? currentVideo
-        guard let requestedVideo,
-              playingPlaylistID == RoamingPlaylist.id,
-              roamingNextVideo(after: requestedVideo.id) == nil
-        else { return }
+        guard let requestedVideo else { return }
+        let requestedVideoID = requestedVideo.id
+        let isPlayingRoamingVideo = playingPlaylistID == RoamingPlaylist.id
+            && currentVideo?.id == requestedVideoID
+        let isBrowsingRoamingVideo = playbackQueue.isRoaming
+            && playbackQueue.currentID == requestedVideoID
+        guard isPlayingRoamingVideo || isBrowsingRoamingVideo else { return }
+        if pendingRoamingRecommendationReplacementSourceID != nil,
+           pendingRoamingRecommendationReplacementSourceID != requestedVideoID {
+            pendingRoamingRecommendationReplacementSourceID = nil
+        }
 
         relatedVideoTask?.cancel()
-        let requestedVideoID = requestedVideo.id
         relatedVideoTask = Task { [weak self, service] in
             do {
-                guard let recommendation = try await service.topRelatedVideo(for: requestedVideo),
-                      !Task.isCancelled,
-                      let self,
-                      self.playingPlaylistID == RoamingPlaylist.id,
-                      self.currentVideo?.id == requestedVideoID
+                let recommendations = try await service.relatedVideos(for: requestedVideo)
+                guard !Task.isCancelled,
+                      let self
                 else { return }
+                let stillPlayingRoamingVideo = self.playingPlaylistID == RoamingPlaylist.id
+                    && self.currentVideo?.id == requestedVideoID
+                let stillBrowsingRoamingVideo = self.playbackQueue.isRoaming
+                    && self.playbackQueue.currentID == requestedVideoID
+                guard stillPlayingRoamingVideo || stillBrowsingRoamingVideo else { return }
 
-                if self.playbackQueue.savedPlaylistID == RoamingPlaylist.id {
-                    _ = self.playbackQueue.insertRoamingNextIfMissing(
-                        recommendation,
-                        after: requestedVideoID
-                    )
-                } else {
-                    _ = self.savedPlaylists.insertRoamingNextIfMissing(
-                        recommendation,
-                        after: requestedVideoID
-                    )
+                self.roamingRecommendationSourceID = requestedVideoID
+                self.roamingRecommendations = recommendations
+                self.roamingRecommendationCursor = self.roamingNextVideo(after: requestedVideoID)
+                    .flatMap { next in recommendations.firstIndex(where: { $0.id == next.id }) }
+                    ?? -1
+                self.fillRoamingNextIfMissing(after: requestedVideoID)
+                if self.pendingRoamingRecommendationReplacementSourceID == requestedVideoID {
+                    self.pendingRoamingRecommendationReplacementSourceID = nil
+                    self.replaceRoamingNextRecommendation()
                 }
             } catch is CancellationError {
                 return
@@ -811,6 +858,53 @@ final class PlayerController: ObservableObject {
                 // Related videos are opportunistic; playback remains usable without one.
             }
         }
+    }
+
+    private func fillRoamingNextIfMissing(after currentID: String) {
+        guard roamingNextVideo(after: currentID) == nil else { return }
+
+        let items = playbackQueue.savedPlaylistID == RoamingPlaylist.id
+            ? playbackQueue.items
+            : savedPlaylists.roamingPlaylist.items
+        let excludedIDs = Set(items.map(\.id))
+        guard let candidate = nextRoamingRecommendation(excluding: excludedIDs) else { return }
+
+        let inserted: Bool
+        if playbackQueue.savedPlaylistID == RoamingPlaylist.id {
+            inserted = playbackQueue.insertRoamingNextIfMissing(
+                candidate.video,
+                after: currentID
+            )
+        } else {
+            inserted = savedPlaylists.insertRoamingNextIfMissing(
+                candidate.video,
+                after: currentID
+            )
+        }
+        if inserted {
+            roamingRecommendationCursor = candidate.index
+        }
+    }
+
+    private func nextRoamingRecommendation(
+        excluding excludedIDs: Set<String>
+    ) -> (index: Int, video: VideoSearchResult)? {
+        guard !roamingRecommendations.isEmpty else { return nil }
+        for offset in 1 ... roamingRecommendations.count {
+            let index = (roamingRecommendationCursor + offset) % roamingRecommendations.count
+            let candidate = roamingRecommendations[index]
+            if !excludedIDs.contains(candidate.id) {
+                return (index, candidate)
+            }
+        }
+        return nil
+    }
+
+    private func clearRoamingRecommendations() {
+        roamingRecommendationSourceID = nil
+        roamingRecommendations = []
+        roamingRecommendationCursor = -1
+        pendingRoamingRecommendationReplacementSourceID = nil
     }
 
     private func roamingNextVideo(after currentID: String) -> VideoSearchResult? {

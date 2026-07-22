@@ -112,15 +112,18 @@ final class PlaybackQueue: ObservableObject {
 
     func enqueue(_ video: VideoSearchResult) {
         if isRoaming {
-            let window = RoamingPlaylist.insertingNext(
-                video,
-                in: items,
-                currentID: currentID
-            )
-            guard window.items != items || window.currentID != currentID else { return }
-            items = window.items
-            currentID = window.currentID
-            persist()
+            if currentID != nil {
+                _ = replaceRoamingNext(with: video)
+            } else {
+                let window = RoamingPlaylist.insertingNext(
+                    video,
+                    in: items,
+                    currentID: nil
+                )
+                guard window.items != items else { return }
+                items = window.items
+                persist()
+            }
             return
         }
 
@@ -274,6 +277,27 @@ final class PlaybackQueue: ObservableObject {
             currentID: currentID
         )
         items = window.items
+        persist()
+        return true
+    }
+
+    @discardableResult
+    func replaceRoamingNext(with video: VideoSearchResult) -> Bool {
+        guard isRoaming,
+              let currentID,
+              video.id != currentID
+        else { return false }
+
+        let window = RoamingPlaylist.insertingNext(
+            video,
+            in: items,
+            currentID: currentID
+        )
+        guard window.items != items || window.currentID != self.currentID else {
+            return false
+        }
+        items = window.items
+        self.currentID = window.currentID
         persist()
         return true
     }

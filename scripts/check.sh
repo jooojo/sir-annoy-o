@@ -90,6 +90,31 @@ if (( ui_contract_failed )); then
     exit 1
 fi
 
+roaming_role_failed=0
+if rg -Fq 'case roamingPrevious' Sources/AnnoyO/MenuBarView.swift \
+    && rg -Fq '.help("替换成下一首")' Sources/AnnoyO/MenuBarView.swift \
+    && rg -Fq 'case roamingNext' Sources/AnnoyO/MenuBarView.swift \
+    && rg -Fq '.help("换一首推荐")' Sources/AnnoyO/MenuBarView.swift \
+    && rg -Fq 'if role == .regular {' Sources/AnnoyO/MenuBarView.swift; then
+    echo "PASS: roaming rows expose role-specific actions without delete controls"
+else
+    echo "FAILED: roaming previous, current and next rows do not enforce their action contracts" >&2
+    roaming_role_failed=1
+fi
+
+if rg -Fq '? Array(0 ... 6)' Sources/AnnoyO/RollerLoopLayout.swift \
+    && rg -Fq 'recenterIfNeeded(clipView)' Sources/AnnoyO/MenuBarView.swift \
+    && ! rg -Fq 'boundaryWrapTarget' Sources/AnnoyO; then
+    echo "PASS: sparse rollers use complete repeated cycles and distance-preserving recentering"
+else
+    echo "FAILED: queue roller still relies on a boundary jump or lacks complete sparse cycles" >&2
+    roaming_role_failed=1
+fi
+
+if (( roaming_role_failed )); then
+    exit 1
+fi
+
 mkdir -p .build/check-cache
 
 SDKROOT="$sdk_path" \

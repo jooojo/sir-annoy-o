@@ -63,11 +63,23 @@ final class MockBilibiliURLProtocol: URLProtocol, @unchecked Sendable {
             """
         case "/x/web-interface/archive/related":
             responseBody = """
-            {"code":0,"message":"OK","data":[{
-              "bvid":"BV1RELATEDTOP","title":"推荐 Top 1","owner":{"name":"推荐 UP"},
-              "desc":"自动推荐","pic":"http://i0.hdslb.com/mock.jpg","duration":160,
-              "stat":{"view":439563},"pubdate":1700000123
-            }]}
+            {"code":0,"message":"OK","data":[
+              {
+                "bvid":"BV1RELATEDTOP","title":"推荐 Top 1","owner":{"name":"推荐 UP"},
+                "desc":"自动推荐","pic":"http://i0.hdslb.com/mock.jpg","duration":160,
+                "stat":{"view":439563},"pubdate":1700000123
+              },
+              {
+                "bvid":"BV1RELATEDSECOND","title":"推荐 2","owner":{"name":"推荐 UP"},
+                "desc":"自动推荐","pic":"","duration":161,
+                "stat":{"view":2},"pubdate":1700000124
+              },
+              {
+                "bvid":"BV1RELATEDTHIRD","title":"推荐 3","owner":{"name":"推荐 UP"},
+                "desc":"自动推荐","pic":"","duration":162,
+                "stat":{"view":3},"pubdate":1700000125
+              }
+            ]}
             """
         default:
             responseBody = #"{"code":-404,"message":"mock route not found"}"#
