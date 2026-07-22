@@ -30,6 +30,15 @@ enum AnnoyOVisualChecks {
             name: "annoyo-status-icon-light.png",
             settleTime: 0.2
         )
+        let playingIconOutput = render(
+            view: StatusBarIcon(isPlaying: true)
+                .foregroundStyle(.black)
+                .padding(3)
+                .background(.white),
+            width: 24,
+            name: "annoyo-status-icon-playing-light.png",
+            settleTime: 0.2
+        )
         let previous = sampleVideo(id: "BV1VISUAL1", title: "适合工作时听的轻音乐")
         let current = sampleVideo(id: "BV1VISUAL2", title: "深夜电台：慢下来听一会儿")
         let next = sampleVideo(id: "BV1VISUAL3", title: "雨夜白噪音与城市漫步")
@@ -83,6 +92,7 @@ enum AnnoyOVisualChecks {
         if ProcessInfo.processInfo.environment["ANNOYO_STATIC_VISUALS"] == "1" {
             print(emptyOutput.path)
             print(iconOutput.path)
+            print(playingIconOutput.path)
             print(mainQueueOutput.path)
             print(searchResultsOutput.path)
             print(accountOutput.path)
@@ -133,6 +143,7 @@ enum AnnoyOVisualChecks {
         controller.togglePlayback()
         print(emptyOutput.path)
         print(iconOutput.path)
+        print(playingIconOutput.path)
         print(mainQueueOutput.path)
         print(accountOutput.path)
         print(userPlaylistAccountOutput.path)

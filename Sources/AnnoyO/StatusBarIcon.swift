@@ -88,11 +88,13 @@ private enum StatusBarHornImage {
 
             if isPlaying {
                 let sound = NSBezierPath()
-                sound.move(to: NSPoint(x: 16.7, y: 11.8))
-                sound.line(to: NSPoint(x: 17.5, y: 12.4))
-                sound.move(to: NSPoint(x: 16.7, y: 7.65))
-                sound.line(to: NSPoint(x: 17.5, y: 7.05))
-                sound.lineWidth = 1.25
+                sound.move(to: NSPoint(x: 16.65, y: 12.05))
+                sound.line(to: NSPoint(x: 17.55, y: 12.75))
+                sound.move(to: NSPoint(x: 16.8, y: 9.7))
+                sound.line(to: NSPoint(x: 17.75, y: 9.7))
+                sound.move(to: NSPoint(x: 16.65, y: 7.35))
+                sound.line(to: NSPoint(x: 17.55, y: 6.65))
+                sound.lineWidth = 1.05
                 sound.lineCapStyle = .round
                 sound.stroke()
             }
