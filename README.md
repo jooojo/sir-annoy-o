@@ -41,6 +41,10 @@ open dist/AnnoyO.app
 
 脚本生成 ad-hoc 签名的 `dist/AnnoyO.app`，适合本机运行。公开分发仍需要 Apple Developer 签名与公证。
 
+## 下载发布版本
+
+[GitHub Releases](https://github.com/jooojo/sir-annoy-o/releases) 提供按版本打包的应用和 SHA-256 校验文件。当前附件使用 ad-hoc 签名，尚未经过 Apple notarization；如需完整信任链，请从源码构建。
+
 ## 开发与验证
 
 ```bash
@@ -56,6 +60,8 @@ ANNOYO_LIVE_TESTS=1 ./scripts/check.sh
 ```
 
 模块职责、状态所有权和并发约束见 [`docs/architecture.md`](docs/architecture.md)。参与开发前请阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md)；安全问题请按 [`SECURITY.md`](SECURITY.md) 私下报告。
+
+维护者发布版本时应遵循 [`docs/releasing.md`](docs/releasing.md)，先手动演练打包 workflow，再创建与应用版本一致的 tag。
 
 ## 数据与隐私
 
