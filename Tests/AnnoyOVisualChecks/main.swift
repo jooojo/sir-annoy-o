@@ -74,20 +74,68 @@ enum AnnoyOVisualChecks {
             name: "annoyo-main-search-results-light.png",
             settleTime: 0.8
         )
+        let previewAccount = BilibiliAccount(name: "神奇的 jo 喵", avatarURL: nil)
+        let previewCacheSummary = AudioCacheSummary(
+            usedBytes: 215_167_795,
+            limitBytes: 2 * 1024 * 1024 * 1024,
+            itemCount: 34
+        )
         let accountOutput = render(
-            view: SettingsPopoverView(controller: controller, onClose: {})
+            view: SettingsPopoverView(
+                controller: controller,
+                previewAccount: previewAccount,
+                previewCacheSummary: previewCacheSummary,
+                onClose: {}
+            )
                 .background(.regularMaterial),
-            width: 360,
+            width: 304,
             name: "annoyo-settings-roaming-light.png",
             settleTime: 0.5
         )
         controller.createPlaylist()
+        let userPlaylistItems = (1 ... 20).map { index in
+            sampleVideo(
+                id: "BV1LIST\(index)",
+                title: "播放列表里的第 \(index) 首音频"
+            )
+        }
+        controller.playbackQueue.replace(
+            items: userPlaylistItems,
+            currentID: userPlaylistItems[9].id,
+            resumePartIndex: 0,
+            resumePosition: 0,
+            savedPlaylistID: controller.playbackQueue.savedPlaylistID,
+            savedPlaylistName: controller.playbackQueue.savedPlaylistName
+        )
+        let userPlaylistOutput = render(
+            controller: controller,
+            name: "annoyo-main-user-playlist-light.png",
+            settleTime: 0.8
+        )
         let userPlaylistAccountOutput = render(
-            view: SettingsPopoverView(controller: controller, onClose: {})
+            view: SettingsPopoverView(
+                controller: controller,
+                previewAccount: previewAccount,
+                previewCacheSummary: previewCacheSummary,
+                onClose: {}
+            )
                 .background(.regularMaterial),
-            width: 360,
+            width: 304,
             name: "annoyo-settings-user-playlist-light.png",
             settleTime: 0.5
+        )
+        let darkSettingsOutput = render(
+            view: SettingsPopoverView(
+                controller: controller,
+                previewAccount: previewAccount,
+                previewCacheSummary: previewCacheSummary,
+                onClose: {}
+            )
+                .background(.regularMaterial),
+            width: 304,
+            name: "annoyo-settings-user-playlist-dark.png",
+            settleTime: 0.5,
+            colorScheme: .dark
         )
         if ProcessInfo.processInfo.environment["ANNOYO_STATIC_VISUALS"] == "1" {
             print(emptyOutput.path)
@@ -96,7 +144,9 @@ enum AnnoyOVisualChecks {
             print(mainQueueOutput.path)
             print(searchResultsOutput.path)
             print(accountOutput.path)
+            print(userPlaylistOutput.path)
             print(userPlaylistAccountOutput.path)
+            print(darkSettingsOutput.path)
             return
         }
 
@@ -146,7 +196,9 @@ enum AnnoyOVisualChecks {
         print(playingIconOutput.path)
         print(mainQueueOutput.path)
         print(accountOutput.path)
+        print(userPlaylistOutput.path)
         print(userPlaylistAccountOutput.path)
+        print(darkSettingsOutput.path)
         print(searchResultsOutput.path)
         print(liveSearchResultsOutput.path)
         print(playingOutput.path)
@@ -170,10 +222,11 @@ enum AnnoyOVisualChecks {
         view: Content,
         width: CGFloat,
         name: String,
-        settleTime: TimeInterval
+        settleTime: TimeInterval,
+        colorScheme: ColorScheme = .light
     ) -> URL {
         let rootView = view
-            .environment(\.colorScheme, .light)
+            .environment(\.colorScheme, colorScheme)
         let hostingView = NSHostingView(rootView: rootView)
         hostingView.frame = NSRect(x: 0, y: 0, width: width, height: 1)
         let window = NSWindow(

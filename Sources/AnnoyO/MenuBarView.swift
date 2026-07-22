@@ -19,6 +19,7 @@ struct MenuBarView: View {
     private let initialSearchResults: [VideoSearchResult]
     @State private var showsSettings = false
     @State private var mainPanelMode = MainPanelMode.playlist
+    @State private var isHeaderSearchExpanded = false
     @State private var headerSearchText = ""
     @State private var displayedSearchResults: [VideoSearchResult] = []
     @State private var activeSearchTransitionID: UUID?
@@ -39,6 +40,7 @@ struct MenuBarView: View {
     ) {
         _controller = ObservedObject(wrappedValue: controller)
         self.initialSearchResults = initialSearchResults
+        _isHeaderSearchExpanded = State(initialValue: !initialSearchText.isEmpty)
         _headerSearchText = State(initialValue: initialSearchText)
     }
 
@@ -113,6 +115,7 @@ struct MenuBarView: View {
     private func mainHeader(using scrollProxy: ScrollViewProxy) -> some View {
         HStack(spacing: 4) {
             Button {
+                collapseHeaderSearch()
                 cancelRenamingPlaylist()
                 controller.switchPlaylist(by: -1)
             } label: {
@@ -121,6 +124,9 @@ struct MenuBarView: View {
             .buttonStyle(PlaylistToolbarButtonStyle())
             .disabled(!controller.canSwitchPlaylist)
             .help("上一个播放列表")
+            .simultaneousGesture(
+                TapGesture().onEnded { collapseHeaderSearch() }
+            )
 
             HStack(alignment: .firstTextBaseline, spacing: 5) {
                 ZStack(alignment: .leading) {
@@ -134,10 +140,12 @@ struct MenuBarView: View {
                     } else if controller.playbackQueue.isRoaming {
                         Text(controller.playbackQueue.displayName)
                             .font(.system(size: 13, weight: .bold, design: .rounded))
+                            .foregroundStyle(Color(nsColor: .labelColor))
                             .lineLimit(1)
                     } else {
                         Text(controller.playbackQueue.displayName)
                             .font(.system(size: 13, weight: .bold, design: .rounded))
+                            .foregroundStyle(Color(nsColor: .labelColor))
                             .lineLimit(1)
                             .contentShape(Rectangle())
                             .onTapGesture { beginRenamingPlaylist() }
@@ -157,10 +165,14 @@ struct MenuBarView: View {
                 .easeInOut(duration: 0.28),
                 value: controller.playbackQueue.savedPlaylistID
             )
-            .frame(minWidth: 54, maxWidth: 74, alignment: .leading)
+            .frame(width: isHeaderSearchExpanded ? 0 : 112, alignment: .leading)
+            .opacity(isHeaderSearchExpanded ? 0 : 1)
+            .clipped()
             .layoutPriority(3)
+            .animation(.easeInOut(duration: 0.24), value: isHeaderSearchExpanded)
 
             Button {
+                collapseHeaderSearch()
                 cancelRenamingPlaylist()
                 controller.switchPlaylist(by: 1)
             } label: {
@@ -169,8 +181,12 @@ struct MenuBarView: View {
             .buttonStyle(PlaylistToolbarButtonStyle())
             .disabled(!controller.canSwitchPlaylist)
             .help("下一个播放列表")
+            .simultaneousGesture(
+                TapGesture().onEnded { collapseHeaderSearch() }
+            )
 
             Button {
+                collapseHeaderSearch()
                 cancelRenamingPlaylist()
                 controller.createPlaylist()
             } label: {
@@ -179,18 +195,21 @@ struct MenuBarView: View {
             .buttonStyle(PlaylistToolbarButtonStyle())
             .help("新建播放列表")
 
-            HeaderSearchField(
+            Spacer(minLength: 0)
+
+            HeaderSearchControl(
                 text: $headerSearchText,
+                isExpanded: $isHeaderSearchExpanded,
                 isSearching: controller.isSearching
             ) {
                 beginSearchTransition(using: scrollProxy)
             }
-            .frame(width: 88)
             .layoutPriority(2)
 
             playbackControls(using: scrollProxy)
 
             Button {
+                collapseHeaderSearch()
                 showsSettings = true
             } label: {
                 Image(systemName: "gearshape")
@@ -210,6 +229,7 @@ struct MenuBarView: View {
     private func playbackControls(using scrollProxy: ScrollViewProxy) -> some View {
         HStack(spacing: 0) {
             Button {
+                collapseHeaderSearch()
                 controller.togglePlayback()
             } label: {
                 Group {
@@ -233,6 +253,7 @@ struct MenuBarView: View {
                 .frame(width: 1, height: 13)
 
             Button {
+                collapseHeaderSearch()
                 returnToPlayingAndAnimate(using: scrollProxy)
             } label: {
                 Image(systemName: "scope")
@@ -252,6 +273,7 @@ struct MenuBarView: View {
                 .frame(width: 1, height: 13)
 
             Button {
+                collapseHeaderSearch()
                 controller.cyclePlaybackOrderMode()
             } label: {
                 Image(systemName: playbackOrderModeIcon)
@@ -265,6 +287,9 @@ struct MenuBarView: View {
         .font(.system(size: 9, weight: .semibold))
         .foregroundStyle(.secondary)
         .background(.secondary.opacity(0.08), in: Capsule())
+        .simultaneousGesture(
+            TapGesture().onEnded { collapseHeaderSearch() }
+        )
     }
 
     private var playbackOrderModeIcon: String {
@@ -414,6 +439,10 @@ struct MenuBarView: View {
         }
         .padding(.horizontal, 14)
         .padding(.bottom, 14)
+        .contentShape(Rectangle())
+        .simultaneousGesture(
+            TapGesture().onEnded { collapseHeaderSearch() }
+        )
     }
 
     private func searchResultsPanel(using scrollProxy: ScrollViewProxy) -> some View {
@@ -468,6 +497,10 @@ struct MenuBarView: View {
         }
         .padding(.horizontal, 14)
         .padding(.bottom, 14)
+        .contentShape(Rectangle())
+        .simultaneousGesture(
+            TapGesture().onEnded { collapseHeaderSearch() }
+        )
     }
 
     private var searchRollerHeight: CGFloat { rollerHeight - 41 }
@@ -538,6 +571,7 @@ struct MenuBarView: View {
             guard !Task.isCancelled else { return }
             withAnimation(.easeInOut(duration: 0.22)) {
                 mainPanelMode = .playlist
+                isHeaderSearchExpanded = false
             }
             try? await Task.sleep(for: .milliseconds(140))
             withAnimation(.timingCurve(0.08, 0.72, 0.12, 1, duration: 0.62)) {
@@ -602,8 +636,8 @@ struct MenuBarView: View {
         }
     }
 
-    private var rollerHeight: CGFloat { 334 }
-    private var rollerEndInset: CGFloat { 117 }
+    private var rollerHeight: CGFloat { 270 }
+    private var rollerEndInset: CGFloat { max(0, (rollerHeight - 100) / 2) }
 
     private func rollerPosition(for geometry: GeometryProxy) -> CGFloat {
         let center = rollerHeight / 2
@@ -757,6 +791,13 @@ struct MenuBarView: View {
     private func cancelRenamingPlaylist() {
         isRenamingPlaylist = false
         playlistNameDraft = ""
+    }
+
+    private func collapseHeaderSearch() {
+        guard isHeaderSearchExpanded else { return }
+        withAnimation(.easeInOut(duration: 0.24)) {
+            isHeaderSearchExpanded = false
+        }
     }
 
 }
@@ -1363,35 +1404,69 @@ private struct RollerQueueRow: View {
     }
 }
 
-private struct HeaderSearchField: View {
+private struct HeaderSearchControl: View {
     @Binding var text: String
+    @Binding var isExpanded: Bool
     let isSearching: Bool
     let onSubmit: () -> Void
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.secondary)
-            TextField("搜索", text: $text)
-                .textFieldStyle(.plain)
-                .font(.system(size: 10, weight: .medium))
-                .focused($isFocused)
-                .frame(width: isSearching ? 38 : 54)
-                .onSubmit(onSubmit)
-            if isSearching {
-                ProgressView().controlSize(.mini)
+        ZStack(alignment: .trailing) {
+            if isExpanded {
+                HStack(spacing: 4) {
+                    Button(action: onSubmit) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 9, weight: .semibold))
+                            .frame(width: 16, height: 25)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+
+                    TextField("搜索", text: $text)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 10, weight: .medium))
+                        .focused($isFocused)
+                        .frame(minWidth: 0, maxWidth: .infinity)
+                        .onSubmit(onSubmit)
+
+                    if isSearching {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .frame(width: 12)
+                    }
+                }
+                .padding(.horizontal, 6)
+                .frame(width: 152, height: 27)
+                .background(
+                    Color.primary.opacity(isFocused ? 0.08 : 0.055),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            } else {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.24)) {
+                        isExpanded = true
+                    }
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .buttonStyle(MainToolbarButtonStyle())
+                .help("搜索")
+                .transition(.opacity)
             }
         }
-        .padding(.horizontal, 8)
-        .frame(height: 27)
+        .frame(width: isExpanded ? 152 : 29, height: 29, alignment: .trailing)
         .clipped()
-        .background(
-            Color.primary.opacity(isFocused ? 0.08 : 0.055),
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-        )
-        .animation(.easeOut(duration: 0.12), value: isFocused)
+        .animation(.easeInOut(duration: 0.24), value: isExpanded)
+        .task(id: isExpanded) {
+            if isExpanded {
+                isFocused = true
+            } else {
+                isFocused = false
+            }
+        }
         .help("搜索 Bilibili 视频")
     }
 }
@@ -1520,10 +1595,29 @@ private struct SearchReturnButtonStyle: ButtonStyle {
 
 struct SettingsPopoverView: View {
     @ObservedObject var controller: PlayerController
+    let previewAccount: BilibiliAccount?
+    let previewCacheSummary: AudioCacheSummary?
     let onClose: () -> Void
 
+    init(
+        controller: PlayerController,
+        previewAccount: BilibiliAccount? = nil,
+        previewCacheSummary: AudioCacheSummary? = nil,
+        onClose: @escaping () -> Void
+    ) {
+        self.controller = controller
+        self.previewAccount = previewAccount
+        self.previewCacheSummary = previewCacheSummary
+        self.onClose = onClose
+    }
+
     var body: some View {
-        AccountView(player: controller, onClose: onClose)
+        AccountView(
+            player: controller,
+            onClose: onClose,
+            previewAccount: previewAccount,
+            previewCacheSummary: previewCacheSummary
+        )
     }
 }
 

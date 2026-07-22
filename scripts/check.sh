@@ -15,11 +15,12 @@ else
     echo "PASS: menu bar label avoids Canvas rendering"
 fi
 
-account_hover_action_count="$(rg -F -c '.buttonStyle(AccountHoverHighlight' Sources/AnnoyO/AccountView.swift || true)"
-if (( account_hover_action_count >= 4 )); then
-    echo "PASS: account actions expose hover highlighting"
+settings_row_hover_count="$(rg -F -c '.buttonStyle(SettingsRowButtonStyle())' Sources/AnnoyO/AccountView.swift || true)"
+settings_accessory_hover_count="$(rg -F -c '.buttonStyle(SettingsAccessoryButtonStyle())' Sources/AnnoyO/AccountView.swift || true)"
+if (( settings_row_hover_count >= 2 && settings_accessory_hover_count >= 2 )); then
+    echo "PASS: settings rows and accessory actions expose hover highlighting"
 else
-    echo "FAILED: expected hover highlighting on playlist, logout, cache and app quit actions" >&2
+    echo "FAILED: expected hover highlighting on settings rows and accessory actions" >&2
     ui_shell_failed=1
 fi
 
@@ -27,10 +28,11 @@ if rg -Fq 'ForEach(player.savedPlaylists.playlists)' Sources/AnnoyO/AccountView.
     echo "FAILED: account popover still renders the saved-playlist browser" >&2
     ui_shell_failed=1
 elif rg -Fq 'player.playbackQueue.savedPlaylistID' Sources/AnnoyO/AccountView.swift \
-    && rg -Fq 'AccountActionRowLabel' Sources/AnnoyO/AccountView.swift; then
-    echo "PASS: account deletion targets the currently browsed playlist with aligned action rows"
+    && rg -Fq 'SettingsRow' Sources/AnnoyO/AccountView.swift \
+    && rg -Fq '.frame(width: 304)' Sources/AnnoyO/AccountView.swift; then
+    echo "PASS: settings popover is compact and targets the currently browsed playlist"
 else
-    echo "FAILED: account popover lacks a browsed-playlist delete action or shared row layout" >&2
+    echo "FAILED: settings popover lacks compact shared rows or browsed-playlist deletion" >&2
     ui_shell_failed=1
 fi
 
@@ -38,7 +40,12 @@ if rg -Fq 'struct SearchView' Sources/AnnoyO/MenuBarView.swift \
     || rg -Fq 'SearchView(' Sources/AnnoyO/AccountView.swift; then
     echo "FAILED: obsolete popover search implementation still exists" >&2
     ui_shell_failed=1
-elif rg -Fq 'HeaderSearchField' Sources/AnnoyO/MenuBarView.swift \
+elif rg -Fq 'HeaderSearchControl' Sources/AnnoyO/MenuBarView.swift \
+    && rg -Fq 'isHeaderSearchExpanded = false' Sources/AnnoyO/MenuBarView.swift \
+    && rg -Fq '.frame(width: isHeaderSearchExpanded ? 0 : 112' Sources/AnnoyO/MenuBarView.swift \
+    && rg -Fq '.frame(width: isExpanded ? 152 : 29' Sources/AnnoyO/MenuBarView.swift \
+    && rg -Fq 'TapGesture().onEnded { collapseHeaderSearch() }' Sources/AnnoyO/MenuBarView.swift \
+    && rg -Fq 'private var rollerHeight: CGFloat { 270 }' Sources/AnnoyO/MenuBarView.swift \
     && rg -Fq 'Image(systemName: "gearshape")' Sources/AnnoyO/MenuBarView.swift \
     && rg -Fq 'SearchResultsRoller' Sources/AnnoyO/MenuBarView.swift \
     && rg -Fq '返回播放列表' Sources/AnnoyO/MenuBarView.swift; then

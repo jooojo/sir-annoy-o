@@ -85,34 +85,51 @@ final class QRCodeLoginController: ObservableObject {
 struct AccountView: View {
     @ObservedObject var player: PlayerController
     let onClose: () -> Void
+    private let previewAccount: BilibiliAccount?
+    private let usesPreviewCacheSummary: Bool
     @StateObject private var login = QRCodeLoginController()
-    @State private var cacheSummary = AudioCacheSummary(
-        usedBytes: 0,
-        limitBytes: 2 * 1024 * 1024 * 1024,
-        itemCount: 0
-    )
+    @State private var cacheSummary: AudioCacheSummary
+
+    init(
+        player: PlayerController,
+        onClose: @escaping () -> Void,
+        previewAccount: BilibiliAccount? = nil,
+        previewCacheSummary: AudioCacheSummary? = nil
+    ) {
+        self.player = player
+        self.onClose = onClose
+        self.previewAccount = previewAccount
+        usesPreviewCacheSummary = previewCacheSummary != nil
+        _cacheSummary = State(
+            initialValue: previewCacheSummary ?? AudioCacheSummary(
+                usedBytes: 0,
+                limitBytes: 2 * 1024 * 1024 * 1024,
+                itemCount: 0
+            )
+        )
+    }
 
     var body: some View {
-        VStack(spacing: 11) {
-            if let account = player.account {
+        VStack(spacing: 0) {
+            if let account = displayedAccount {
                 loggedInView(account)
             } else {
                 qrLoginView
             }
 
-            GlassContentDivider()
+            settingsDivider
             deleteCurrentPlaylistButton
-            GlassContentDivider()
+            settingsDivider
             cacheView
-            GlassContentDivider()
+            settingsDivider
             quitApplicationButton
         }
-        .padding(16)
-        .frame(width: 360)
+        .padding(10)
+        .frame(width: 304)
         .fixedSize(horizontal: false, vertical: true)
         .onAppear {
-            refreshCacheSummary()
-            if player.account == nil { login.start() }
+            if !usesPreviewCacheSummary { refreshCacheSummary() }
+            if displayedAccount == nil { login.start() }
         }
         .onDisappear { login.cancel() }
         .onReceive(login.$isComplete) { complete in
@@ -121,29 +138,39 @@ struct AccountView: View {
         }
     }
 
+    private var displayedAccount: BilibiliAccount? {
+        previewAccount ?? player.account
+    }
+
+    private var settingsDivider: some View {
+        GlassContentDivider()
+            .padding(.vertical, 3)
+            .padding(.leading, SettingsRow.contentLeadingInset)
+    }
+
     private var qrLoginView: some View {
-        VStack(spacing: 13) {
+        VStack(spacing: 10) {
             ZStack {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
                     .fill(.white)
-                    .shadow(color: .black.opacity(0.08), radius: 12, y: 4)
+                    .shadow(color: .black.opacity(0.07), radius: 9, y: 3)
                 if let image = login.image {
                     Image(nsImage: image)
                         .interpolation(.none)
                         .resizable()
-                        .frame(width: 190, height: 190)
+                        .frame(width: 158, height: 158)
                 } else if login.isLoading {
                     ProgressView().controlSize(.large)
                 } else {
                     Image(systemName: "qrcode")
-                        .font(.system(size: 64, weight: .light))
+                        .font(.system(size: 52, weight: .light))
                         .foregroundStyle(.secondary)
                 }
             }
-            .frame(width: 218, height: 218)
+            .frame(width: 184, height: 184)
 
             Text(login.statusText)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
 
             if let error = login.errorMessage {
                 Button("刷新二维码") { login.start() }
@@ -157,55 +184,46 @@ struct AccountView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity)
     }
 
     private func loggedInView(_ account: BilibiliAccount) -> some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(account.name)
-                    .font(.system(size: 12, weight: .semibold))
-                Text("Bilibili 已登录")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
+        SettingsRow(
+            systemImage: "person.crop.circle",
+            title: account.name,
+            subtitle: "Bilibili 已登录"
+        ) {
             Button("退出账号") {
                 player.logOut()
                 onClose()
             }
-            .buttonStyle(AccountHoverHighlight(horizontalPadding: 7, verticalPadding: 4, cornerRadius: 6))
+            .buttonStyle(SettingsAccessoryButtonStyle())
             .font(.system(size: 9, weight: .semibold))
             .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 10)
-        .frame(height: 42)
-        .background(.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
     }
 
     private var cacheView: some View {
-        VStack(spacing: 9) {
-            AccountActionRowLabel(
-                systemImage: "internaldrive",
-                title: "音频缓存",
-                trailingText: "\(formattedBytes(cacheSummary.usedBytes)) / \(formattedBytes(cacheSummary.limitBytes))"
-            )
-
-            HStack {
-                Text("已缓存 \(cacheSummary.itemCount) 个音频")
-                    .font(.system(size: 9))
+        SettingsRow(
+            systemImage: "internaldrive",
+            title: "音频缓存",
+            subtitle: "已缓存 \(cacheSummary.itemCount) 个音频"
+        ) {
+            VStack(alignment: .trailing, spacing: 3) {
+                Text("\(formattedBytes(cacheSummary.usedBytes)) / \(formattedBytes(cacheSummary.limitBytes))")
+                    .font(.system(size: 8, weight: .medium))
                     .foregroundStyle(.secondary)
-                Spacer()
+                    .lineLimit(1)
                 Button("清理缓存") {
                     player.clearAudioCache()
                     refreshCacheSummary()
                 }
-                .buttonStyle(AccountHoverHighlight(horizontalPadding: 7, verticalPadding: 4, cornerRadius: 6))
-                .font(.system(size: 10, weight: .semibold))
+                .buttonStyle(SettingsAccessoryButtonStyle())
+                .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .disabled(cacheSummary.usedBytes == 0)
             }
-            .padding(.leading, AccountActionRowLabel.contentLeadingInset)
         }
     }
 
@@ -214,14 +232,14 @@ struct AccountView: View {
             guard let playlist = currentBrowsedPlaylist, !playlist.isRoaming else { return }
             player.deleteSavedPlaylist(playlist)
         } label: {
-            AccountActionRowLabel(
+            SettingsRow(
                 systemImage: "xmark",
                 title: "删除当前列表",
                 trailingText: player.playbackQueue.displayName
             )
         }
-        .buttonStyle(AccountHoverHighlight(horizontalPadding: 0, verticalPadding: 0, cornerRadius: 8))
-        .foregroundStyle(.secondary)
+        .buttonStyle(SettingsRowButtonStyle())
+        .foregroundStyle(.primary)
         .disabled(currentBrowsedPlaylist?.isRoaming != false)
         .help(
             currentBrowsedPlaylist?.isRoaming == true
@@ -234,13 +252,13 @@ struct AccountView: View {
         Button {
             NSApplication.shared.terminate(nil)
         } label: {
-            AccountActionRowLabel(
+            SettingsRow(
                 systemImage: "power",
                 title: "退出 AnnoyO"
             )
         }
-        .buttonStyle(AccountHoverHighlight(horizontalPadding: 0, verticalPadding: 0, cornerRadius: 8))
-        .foregroundStyle(.secondary)
+        .buttonStyle(SettingsRowButtonStyle())
+        .foregroundStyle(.primary)
         .help("退出 AnnoyO")
     }
 
@@ -269,53 +287,115 @@ struct AccountView: View {
     }
 }
 
-private struct AccountActionRowLabel: View {
-    static let iconWidth: CGFloat = 14
-    static let spacing: CGFloat = 7
-    static let rowHeight: CGFloat = 28
-    static let contentLeadingInset = iconWidth + spacing
+private struct SettingsRow: View {
+    static let horizontalPadding: CGFloat = 8
+    static let iconWidth: CGFloat = 18
+    static let spacing: CGFloat = 8
+    static let contentLeadingInset = horizontalPadding + iconWidth + spacing
 
     let systemImage: String
     let title: String
-    var trailingText: String? = nil
+    let subtitle: String?
+    private let accessory: AnyView
 
-    var body: some View {
-        HStack(spacing: Self.spacing) {
-            Image(systemName: systemImage)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: Self.iconWidth)
-            Text(title)
-                .font(.system(size: 11, weight: .semibold))
-            Spacer(minLength: 8)
-            if let trailingText {
+    init(
+        systemImage: String,
+        title: String,
+        subtitle: String? = nil,
+        trailingText: String? = nil
+    ) {
+        self.systemImage = systemImage
+        self.title = title
+        self.subtitle = subtitle
+        if let trailingText {
+            accessory = AnyView(
                 Text(trailingText)
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-            }
+            )
+        } else {
+            accessory = AnyView(EmptyView())
         }
-        .frame(maxWidth: .infinity, minHeight: Self.rowHeight, alignment: .leading)
+    }
+
+    init<Accessory: View>(
+        systemImage: String,
+        title: String,
+        subtitle: String? = nil,
+        @ViewBuilder accessory: () -> Accessory
+    ) {
+        self.systemImage = systemImage
+        self.title = title
+        self.subtitle = subtitle
+        self.accessory = AnyView(accessory())
+    }
+
+    var body: some View {
+        HStack(spacing: Self.spacing) {
+            Image(systemName: systemImage)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: Self.iconWidth)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 8)
+            accessory
+        }
+        .padding(.horizontal, Self.horizontalPadding)
+        .frame(maxWidth: .infinity, minHeight: subtitle == nil ? 40 : 48, alignment: .leading)
         .contentShape(Rectangle())
     }
 }
 
-private struct AccountHoverHighlight: ButtonStyle {
+private struct SettingsRowButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     @State private var isHovered = false
 
-    let horizontalPadding: CGFloat
-    let verticalPadding: CGFloat
-    let cornerRadius: CGFloat
-
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .padding(.horizontal, horizontalPadding)
-            .padding(.vertical, verticalPadding)
             .opacity(isEnabled ? 1 : 0.42)
             .background(
                 Color.primary.opacity(backgroundOpacity(isPressed: configuration.isPressed)),
-                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                isHovered = isEnabled && hovering
+            }
+            .animation(.easeOut(duration: 0.12), value: isHovered)
+    }
+
+    private func backgroundOpacity(isPressed: Bool) -> Double {
+        guard isEnabled else { return 0 }
+        if isPressed { return 0.11 }
+        return isHovered ? 0.07 : 0
+    }
+}
+
+private struct SettingsAccessoryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovered = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .opacity(isEnabled ? 1 : 0.38)
+            .background(
+                Color.primary.opacity(backgroundOpacity(isPressed: configuration.isPressed)),
+                in: RoundedRectangle(cornerRadius: 5, style: .continuous)
             )
             .contentShape(Rectangle())
             .onHover { hovering in
