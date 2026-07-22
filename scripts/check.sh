@@ -157,4 +157,4 @@ swiftc \
     Tests/AnnoyOChecks/main.swift \
     -o .build/annoyo-checks
 
-.build/annoyo-checks
+NSUnbufferedIO=YES .build/annoyo-checks
