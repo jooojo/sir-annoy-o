@@ -21,6 +21,12 @@ struct AudioCacheSummary: Equatable, Sendable {
     let itemCount: Int
 }
 
+struct AudioCacheSource: Sendable {
+    let key: AudioCacheKey
+    let url: URL
+    let headers: [String: String]
+}
+
 struct CachedAudioAsset {
     let asset: AVURLAsset
     let resourceLoader: AudioResourceLoader?
@@ -28,6 +34,8 @@ struct CachedAudioAsset {
 
 final class AudioCache: @unchecked Sendable {
     static let shared = AudioCache()
+
+    private static let prefetchByteLimit = 1_048_576
 
     private let store: AudioCacheStore
     private let sessionConfiguration: URLSessionConfiguration
@@ -42,26 +50,95 @@ final class AudioCache: @unchecked Sendable {
         self.sessionConfiguration = sessionConfiguration.copy() as? URLSessionConfiguration ?? .default
     }
 
-    func makeAsset(
-        key: AudioCacheKey,
-        originURL: URL,
-        headers: [String: String]
-    ) -> CachedAudioAsset {
-        if let localURL = store.completeFileURL(for: key) {
+    func makeAsset(for source: AudioCacheSource) -> CachedAudioAsset {
+        if let localURL = store.completeFileURL(for: source.key) {
             return CachedAudioAsset(asset: AVURLAsset(url: localURL), resourceLoader: nil)
         }
 
         let loader = AudioResourceLoader(
-            key: key,
-            originURL: originURL,
-            headers: headers,
+            source: source,
             store: store,
             sessionConfiguration: sessionConfiguration
         )
-        let assetURL = URL(string: "annoyo-cache://audio/\(key.fileName).m4a")!
+        let assetURL = URL(string: "annoyo-cache://audio/\(source.key.fileName).m4a")!
         let asset = AVURLAsset(url: assetURL)
         asset.resourceLoader.setDelegate(loader, queue: loader.delegateQueue)
         return CachedAudioAsset(asset: asset, resourceLoader: loader)
+    }
+
+    func prefetch(_ source: AudioCacheSource) async throws {
+        if store.completeFileURL(for: source.key) != nil { return }
+
+        let cachedLength =
+            store.cachedPrefix(
+                for: source.key,
+                offset: 0,
+                maxLength: Self.prefetchByteLimit
+            )?.count ?? 0
+        let knownLength = store.contentInfo(for: source.key)?.contentLength
+        if cachedLength >= Self.prefetchByteLimit
+            || knownLength.map({ Int64(cachedLength) >= $0 }) == true
+        {
+            return
+        }
+
+        var request = URLRequest(url: source.url)
+        for (field, value) in source.headers {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
+        request.networkServiceType = .background
+        request.setValue(
+            "bytes=\(cachedLength)-\(Self.prefetchByteLimit - 1)",
+            forHTTPHeaderField: "Range"
+        )
+
+        let session = URLSession(configuration: sessionConfiguration)
+        defer { session.invalidateAndCancel() }
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
+        do {
+            (bytes, response) = try await session.bytes(for: request)
+        } catch {
+            if Task.isCancelled || (error as? URLError)?.code == .cancelled {
+                throw CancellationError()
+            }
+            throw error
+        }
+        guard let http = response as? HTTPURLResponse,
+            http.statusCode == 200 || http.statusCode == 206
+        else {
+            throw AudioCacheError.badHTTPStatus((response as? HTTPURLResponse)?.statusCode)
+        }
+
+        let contentRange = parseAudioContentRange(http.value(forHTTPHeaderField: "Content-Range"))
+        if http.statusCode == 206, contentRange?.start != Int64(cachedLength) {
+            throw AudioCacheError.invalidContentRange
+        }
+        let responseStart = contentRange?.start ?? 0
+        let remainingLimit = max(0, Self.prefetchByteLimit - Int(responseStart))
+        var prefetchedData = Data()
+        prefetchedData.reserveCapacity(remainingLimit)
+        do {
+            for try await byte in bytes.prefix(remainingLimit) {
+                prefetchedData.append(byte)
+            }
+        } catch {
+            if Task.isCancelled || (error as? URLError)?.code == .cancelled {
+                throw CancellationError()
+            }
+            throw error
+        }
+        try Task.checkCancellation()
+        let contentLength =
+            contentRange?.total
+            ?? (http.statusCode == 200 && response.expectedContentLength > 0 ? response.expectedContentLength : nil)
+        store.updateContentInfo(
+            for: source.key,
+            contentLength: contentLength,
+            mimeType: response.mimeType
+        )
+        store.write(prefetchedData, for: source.key, at: responseStart)
+        store.finishAccess(for: source.key)
     }
 
     func summary() -> AudioCacheSummary {
@@ -74,7 +151,8 @@ final class AudioCache: @unchecked Sendable {
 
     private static var defaultRootURL: URL {
         let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        return root
+        return
+            root
             .appendingPathComponent("AnnoyO", isDirectory: true)
             .appendingPathComponent("Audio", isDirectory: true)
     }
@@ -93,7 +171,7 @@ final class AudioCacheStore: @unchecked Sendable {
         self.limitBytes = limitBytes
         try? FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
         if let data = try? Data(contentsOf: indexURL),
-           let decoded = try? JSONDecoder().decode([String: AudioCacheEntry].self, from: data)
+            let decoded = try? JSONDecoder().decode([String: AudioCacheEntry].self, from: data)
         {
             entries = decoded
         } else {
@@ -126,12 +204,12 @@ final class AudioCacheStore: @unchecked Sendable {
         guard offset >= 0, maxLength > 0 else { return nil }
         return lock.withLock {
             guard var entry = entries[key.fileName],
-                  let range = entry.ranges.first(where: { $0.lowerBound <= offset && offset < $0.upperBound })
+                let range = entry.ranges.first(where: { $0.lowerBound <= offset && offset < $0.upperBound })
             else { return nil }
 
             let available = min(Int64(maxLength), range.upperBound - offset)
             guard available > 0,
-                  let handle = try? FileHandle(forReadingFrom: fileURL(for: key))
+                let handle = try? FileHandle(forReadingFrom: fileURL(for: key))
             else { return nil }
             defer { try? handle.close() }
             do {
@@ -160,10 +238,11 @@ final class AudioCacheStore: @unchecked Sendable {
                 try handle.seek(toOffset: UInt64(offset))
                 try handle.write(contentsOf: data)
                 var entry = entries[key.fileName] ?? AudioCacheEntry(key: key)
-                entry.ranges.append(CachedByteRange(
-                    lowerBound: offset,
-                    upperBound: offset + Int64(data.count)
-                ))
+                entry.ranges.append(
+                    CachedByteRange(
+                        lowerBound: offset,
+                        upperBound: offset + Int64(data.count)
+                    ))
                 entry.ranges = Self.merged(entry.ranges)
                 entry.lastAccess = Date()
                 entries[key.fileName] = entry
@@ -273,14 +352,18 @@ final class AudioCacheStore: @unchecked Sendable {
 final class AudioResourceLoader: NSObject, AVAssetResourceLoaderDelegate, URLSessionDataDelegate, @unchecked Sendable {
     let delegateQueue = DispatchQueue(label: "io.annoyo.audio-cache-loader")
 
+    private static let originSegmentLength: Int64 = 256 * 1024
+
     private let key: AudioCacheKey
     private let originURL: URL
     private let headers: [String: String]
     private let store: AudioCacheStore
     private let sessionConfiguration: URLSessionConfiguration
     private let operationQueue: OperationQueue
-    private var contexts: [Int: AudioLoadingContext] = [:]
-    private var requestTasks: [ObjectIdentifier: Int] = [:]
+    private var pendingRequests: [ObjectIdentifier: AudioLoadingContext] = [:]
+    private var pendingOrder: [ObjectIdentifier] = []
+    private var activeTask: URLSessionDataTask?
+    private var activeTransfer: AudioOriginTransfer?
     private lazy var session = URLSession(
         configuration: sessionConfiguration,
         delegate: self,
@@ -288,15 +371,13 @@ final class AudioResourceLoader: NSObject, AVAssetResourceLoaderDelegate, URLSes
     )
 
     init(
-        key: AudioCacheKey,
-        originURL: URL,
-        headers: [String: String],
+        source: AudioCacheSource,
         store: AudioCacheStore,
         sessionConfiguration: URLSessionConfiguration
     ) {
-        self.key = key
-        self.originURL = originURL
-        self.headers = headers
+        key = source.key
+        originURL = source.url
+        headers = source.headers
         self.store = store
         self.sessionConfiguration = sessionConfiguration.copy() as? URLSessionConfiguration ?? .default
         operationQueue = OperationQueue()
@@ -314,36 +395,23 @@ final class AudioResourceLoader: NSObject, AVAssetResourceLoaderDelegate, URLSes
         shouldWaitForLoadingOfRequestedResource loadingRequest: AVAssetResourceLoadingRequest
     ) -> Bool {
         fillContentInformation(on: loadingRequest)
-
+        let requestID = ObjectIdentifier(loadingRequest)
+        let endOffset: Int64?
         if let dataRequest = loadingRequest.dataRequest {
-            let start = dataRequest.currentOffset > 0 ? dataRequest.currentOffset : dataRequest.requestedOffset
-            let requestedEnd = dataRequest.requestsAllDataToEndOfResource
+            endOffset =
+                dataRequest.requestsAllDataToEndOfResource
                 ? nil
                 : dataRequest.requestedOffset + Int64(dataRequest.requestedLength)
-            let cachedReadLength = requestedEnd.map { max(0, min(Int64(1_048_576), $0 - start)) }
-                ?? 1_048_576
-            if let cached = store.cachedPrefix(
-                for: key,
-                offset: start,
-                maxLength: Int(cachedReadLength)
-            ) {
-                dataRequest.respond(with: cached)
-            }
-
-            let nextOffset = dataRequest.currentOffset > 0 ? dataRequest.currentOffset : start
-            if let requestedEnd, nextOffset >= requestedEnd {
-                loadingRequest.finishLoading()
-                store.finishAccess(for: key)
-                return true
-            }
-            startNetworkRequest(
-                loadingRequest,
-                offset: nextOffset,
-                endOffset: requestedEnd
-            )
         } else {
-            startNetworkRequest(loadingRequest, offset: 0, endOffset: 2)
+            endOffset = 2
         }
+        pendingRequests[requestID] = AudioLoadingContext(
+            loadingRequest: loadingRequest,
+            endOffset: endOffset
+        )
+        pendingOrder.removeAll { $0 == requestID }
+        pendingOrder.append(requestID)
+        processPendingRequests()
         return true
     }
 
@@ -352,10 +420,13 @@ final class AudioResourceLoader: NSObject, AVAssetResourceLoaderDelegate, URLSes
         didCancel loadingRequest: AVAssetResourceLoadingRequest
     ) {
         let requestID = ObjectIdentifier(loadingRequest)
-        guard let taskID = requestTasks.removeValue(forKey: requestID),
-              let context = contexts.removeValue(forKey: taskID)
-        else { return }
-        context.task?.cancel()
+        removePendingRequest(requestID)
+        guard pendingRequests.isEmpty, let activeTask, let activeTransfer else {
+            store.finishAccess(for: key)
+            return
+        }
+        activeTransfer.wasCancelledBecauseIdle = true
+        activeTask.cancel()
         store.finishAccess(for: key)
     }
 
@@ -365,73 +436,56 @@ final class AudioResourceLoader: NSObject, AVAssetResourceLoaderDelegate, URLSes
         didReceive response: URLResponse,
         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
     ) {
-        guard let context = contexts[dataTask.taskIdentifier] else {
+        guard activeTask?.taskIdentifier == dataTask.taskIdentifier,
+            let transfer = activeTransfer
+        else {
             completionHandler(.cancel)
             return
         }
         guard let http = response as? HTTPURLResponse,
-              http.statusCode == 200 || http.statusCode == 206
+            http.statusCode == 200 || http.statusCode == 206
         else {
-            context.responseError = URLError(.badServerResponse)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode
+            transfer.responseError = AudioCacheError.badHTTPStatus(statusCode)
             completionHandler(.cancel)
             return
         }
 
-        let contentRange = Self.parseContentRange(http.value(forHTTPHeaderField: "Content-Range"))
+        let contentRange = parseAudioContentRange(http.value(forHTTPHeaderField: "Content-Range"))
+        if http.statusCode == 206, contentRange?.start != transfer.requestedOffset {
+            transfer.responseError = AudioCacheError.invalidContentRange
+            completionHandler(.cancel)
+            return
+        }
         let responseStart = contentRange?.start ?? 0
-        let contentLength = contentRange?.total
+        let contentLength =
+            contentRange?.total
             ?? (http.statusCode == 200 && response.expectedContentLength > 0 ? response.expectedContentLength : nil)
-        context.nextOriginOffset = responseStart
-        context.skipBytes = max(0, context.requestedOffset - responseStart)
-        context.contentLength = contentLength
-        context.mimeType = response.mimeType
+        transfer.nextOriginOffset = responseStart
+        transfer.contentLength = contentLength
+        transfer.mimeType = response.mimeType
         store.updateContentInfo(
             for: key,
             contentLength: contentLength,
             mimeType: response.mimeType
         )
-        fillContentInformation(on: context.loadingRequest)
         completionHandler(.allow)
+        processPendingRequests()
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        guard let context = contexts[dataTask.taskIdentifier] else { return }
+        guard activeTask?.taskIdentifier == dataTask.taskIdentifier,
+            let transfer = activeTransfer
+        else { return }
         store.updateContentInfo(
             for: key,
-            contentLength: context.contentLength,
-            mimeType: context.mimeType
+            contentLength: transfer.contentLength,
+            mimeType: transfer.mimeType
         )
-        store.write(data, for: key, at: context.nextOriginOffset)
-        context.nextOriginOffset += Int64(data.count)
-
-        var responseData = data
-        if context.skipBytes > 0 {
-            let skipped = min(Int64(responseData.count), context.skipBytes)
-            responseData.removeFirst(Int(skipped))
-            context.skipBytes -= skipped
-        }
-        if let endOffset = context.endOffset,
-           let dataRequest = context.loadingRequest.dataRequest
-        {
-            let remaining = max(0, endOffset - dataRequest.currentOffset)
-            if Int64(responseData.count) > remaining {
-                responseData = Data(responseData.prefix(Int(remaining)))
-            }
-        }
-        if !responseData.isEmpty {
-            context.loadingRequest.dataRequest?.respond(with: responseData)
-        }
-
-        if let endOffset = context.endOffset,
-           let currentOffset = context.loadingRequest.dataRequest?.currentOffset,
-           currentOffset >= endOffset
-        {
-            context.loadingRequest.finishLoading()
-            contexts.removeValue(forKey: dataTask.taskIdentifier)
-            requestTasks.removeValue(forKey: ObjectIdentifier(context.loadingRequest))
-            store.finishAccess(for: key)
-            dataTask.cancel()
-        }
+        store.write(data, for: key, at: transfer.nextOriginOffset)
+        transfer.nextOriginOffset += Int64(data.count)
+        transfer.receivedByteCount += data.count
+        processPendingRequests()
     }
 
     func urlSession(
@@ -439,90 +493,200 @@ final class AudioResourceLoader: NSObject, AVAssetResourceLoaderDelegate, URLSes
         task: URLSessionTask,
         didCompleteWithError error: Error?
     ) {
-        guard let context = contexts.removeValue(forKey: task.taskIdentifier) else { return }
-        requestTasks.removeValue(forKey: ObjectIdentifier(context.loadingRequest))
-        store.finishAccess(for: key)
-        guard !context.loadingRequest.isCancelled, !context.loadingRequest.isFinished else { return }
-        if let failure = context.responseError ?? error {
-            context.loadingRequest.finishLoading(with: failure)
-        } else {
-            context.loadingRequest.finishLoading()
+        guard activeTask?.taskIdentifier == task.taskIdentifier,
+            let transfer = activeTransfer
+        else { return }
+        activeTask = nil
+        activeTransfer = nil
+
+        if transfer.wasCancelledBecauseIdle {
+            store.finishAccess(for: key)
+            return
         }
+        if let failure = transfer.responseError ?? error {
+            finishAllPendingRequests(with: failure)
+            return
+        }
+        guard transfer.receivedByteCount > 0 else {
+            finishAllPendingRequests(with: AudioCacheError.emptyResponse)
+            return
+        }
+        processPendingRequests()
     }
 
-    private func startNetworkRequest(
-        _ loadingRequest: AVAssetResourceLoadingRequest,
-        offset: Int64,
-        endOffset: Int64?
-    ) {
-        var request = URLRequest(url: originURL)
-        headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
-        if let endOffset {
-            request.setValue("bytes=\(offset)-\(max(offset, endOffset - 1))", forHTTPHeaderField: "Range")
-        } else {
-            request.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range")
+    private func processPendingRequests() {
+        let requestIDs = pendingOrder
+        for requestID in requestIDs {
+            guard let context = pendingRequests[requestID] else { continue }
+            let loadingRequest = context.loadingRequest
+            guard !loadingRequest.isCancelled, !loadingRequest.isFinished else {
+                removePendingRequest(requestID)
+                continue
+            }
+            fillContentInformation(on: loadingRequest)
+
+            guard let dataRequest = loadingRequest.dataRequest else {
+                if store.contentInfo(for: key) != nil {
+                    finishPendingRequest(requestID)
+                }
+                continue
+            }
+
+            while true {
+                let offset = Self.currentOffset(for: dataRequest)
+                let remaining =
+                    context.endOffset.map { max(0, $0 - offset) }
+                    ?? store.contentInfo(for: key)?.contentLength.map { max(0, $0 - offset) }
+                    ?? 1_048_576
+                guard remaining > 0 else { break }
+                let readLength = Int(min(Int64(1_048_576), remaining))
+                guard
+                    let cached = store.cachedPrefix(
+                        for: key,
+                        offset: offset,
+                        maxLength: readLength
+                    )
+                else { break }
+                dataRequest.respond(with: cached)
+            }
+
+            let currentOffset = Self.currentOffset(for: dataRequest)
+            let reachedRequestedEnd = context.endOffset.map { currentOffset >= $0 } ?? false
+            let reachedResourceEnd =
+                store.contentInfo(for: key)?.contentLength
+                .map { currentOffset >= $0 } ?? false
+            if reachedRequestedEnd || reachedResourceEnd {
+                finishPendingRequest(requestID)
+            }
         }
-        let task = session.dataTask(with: request)
-        let context = AudioLoadingContext(
-            loadingRequest: loadingRequest,
-            requestedOffset: offset,
-            endOffset: endOffset,
-            task: task
+
+        guard activeTask == nil,
+            let context = pendingOrder.reversed().compactMap({ pendingRequests[$0] }).first
+        else { return }
+
+        let offset = context.loadingRequest.dataRequest.map(Self.currentOffset(for:)) ?? 0
+        let knownLength = store.contentInfo(for: key)?.contentLength
+        let requestedEnd = context.endOffset ?? knownLength
+        let segmentEnd = min(
+            requestedEnd ?? offset + Self.originSegmentLength,
+            offset + Self.originSegmentLength
         )
-        contexts[task.taskIdentifier] = context
-        requestTasks[ObjectIdentifier(loadingRequest)] = task.taskIdentifier
+        guard segmentEnd > offset else {
+            finishPendingRequest(ObjectIdentifier(context.loadingRequest))
+            processPendingRequests()
+            return
+        }
+
+        var request = URLRequest(url: originURL)
+        for (field, value) in headers {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
+        request.setValue("bytes=\(offset)-\(segmentEnd - 1)", forHTTPHeaderField: "Range")
+        let task = session.dataTask(with: request)
+        activeTransfer = AudioOriginTransfer(requestedOffset: offset)
+        activeTask = task
         task.resume()
+    }
+
+    private func finishPendingRequest(_ requestID: ObjectIdentifier) {
+        guard let context = pendingRequests[requestID] else { return }
+        removePendingRequest(requestID)
+        guard !context.loadingRequest.isCancelled, !context.loadingRequest.isFinished else { return }
+        context.loadingRequest.finishLoading()
+        store.finishAccess(for: key)
+    }
+
+    private func finishAllPendingRequests(with error: Error) {
+        let contexts = Array(pendingRequests.values)
+        pendingRequests.removeAll()
+        pendingOrder.removeAll()
+        for context in contexts where !context.loadingRequest.isCancelled && !context.loadingRequest.isFinished {
+            context.loadingRequest.finishLoading(with: error)
+        }
+        store.finishAccess(for: key)
+    }
+
+    private func removePendingRequest(_ requestID: ObjectIdentifier) {
+        pendingRequests.removeValue(forKey: requestID)
+        pendingOrder.removeAll { $0 == requestID }
     }
 
     private func fillContentInformation(on loadingRequest: AVAssetResourceLoadingRequest) {
         guard let request = loadingRequest.contentInformationRequest,
-              let info = store.contentInfo(for: key)
+            let info = store.contentInfo(for: key)
         else { return }
         if let contentLength = info.contentLength {
             request.contentLength = contentLength
         }
         request.isByteRangeAccessSupported = true
-        if let mimeType = info.mimeType, let contentType = UTType(mimeType: mimeType) {
+        if let mimeType = info.mimeType,
+            !["application/octet-stream", "audio/mp4", "audio/x-m4a", "application/mp4"].contains(mimeType),
+            let contentType = UTType(mimeType: mimeType)
+        {
             request.contentType = contentType.identifier
         } else {
             request.contentType = UTType.mpeg4Audio.identifier
         }
     }
 
-    private static func parseContentRange(_ value: String?) -> (start: Int64, total: Int64)? {
-        guard let value,
-              let rangeAndTotal = value.split(separator: " ").last,
-              let slash = rangeAndTotal.firstIndex(of: "/"),
-              let dash = rangeAndTotal[..<slash].firstIndex(of: "-"),
-              let start = Int64(rangeAndTotal[..<dash]),
-              let total = Int64(rangeAndTotal[rangeAndTotal.index(after: slash)...])
-        else { return nil }
-        return (start, total)
+    private static func currentOffset(for dataRequest: AVAssetResourceLoadingDataRequest) -> Int64 {
+        dataRequest.currentOffset > 0 ? dataRequest.currentOffset : dataRequest.requestedOffset
     }
+}
+
+private func parseAudioContentRange(_ value: String?) -> (start: Int64, total: Int64)? {
+    guard let value,
+        let rangeAndTotal = value.split(separator: " ").last,
+        let slash = rangeAndTotal.firstIndex(of: "/"),
+        let dash = rangeAndTotal[..<slash].firstIndex(of: "-"),
+        let start = Int64(rangeAndTotal[..<dash]),
+        let total = Int64(rangeAndTotal[rangeAndTotal.index(after: slash)...])
+    else { return nil }
+    return (start, total)
 }
 
 private final class AudioLoadingContext: @unchecked Sendable {
     let loadingRequest: AVAssetResourceLoadingRequest
-    let requestedOffset: Int64
     let endOffset: Int64?
-    weak var task: URLSessionDataTask?
+
+    init(loadingRequest: AVAssetResourceLoadingRequest, endOffset: Int64?) {
+        self.loadingRequest = loadingRequest
+        self.endOffset = endOffset
+    }
+}
+
+private final class AudioOriginTransfer: @unchecked Sendable {
+    let requestedOffset: Int64
     var nextOriginOffset: Int64
-    var skipBytes: Int64 = 0
     var contentLength: Int64?
     var mimeType: String?
     var responseError: Error?
+    var wasCancelledBecauseIdle = false
+    var receivedByteCount = 0
 
-    init(
-        loadingRequest: AVAssetResourceLoadingRequest,
-        requestedOffset: Int64,
-        endOffset: Int64?,
-        task: URLSessionDataTask
-    ) {
-        self.loadingRequest = loadingRequest
+    init(requestedOffset: Int64) {
         self.requestedOffset = requestedOffset
-        self.endOffset = endOffset
-        self.task = task
         nextOriginOffset = requestedOffset
+    }
+}
+
+private enum AudioCacheError: LocalizedError {
+    case badHTTPStatus(Int?)
+    case emptyResponse
+    case invalidContentRange
+
+    var errorDescription: String? {
+        switch self {
+        case .badHTTPStatus(let statusCode):
+            if let statusCode {
+                return "音频 CDN 请求失败（HTTP \(statusCode)）"
+            }
+            return "音频 CDN 返回了无效响应"
+        case .emptyResponse:
+            return "音频 CDN 未返回任何数据"
+        case .invalidContentRange:
+            return "音频 CDN 返回了错位的分段数据"
+        }
     }
 }
 
@@ -557,8 +721,8 @@ private struct CachedByteRange: Codable {
     let upperBound: Int64
 }
 
-private extension NSLock {
-    func withLock<Result>(_ body: () throws -> Result) rethrows -> Result {
+extension NSLock {
+    fileprivate func withLock<Result>(_ body: () throws -> Result) rethrows -> Result {
         lock()
         defer { unlock() }
         return try body()

@@ -7,6 +7,15 @@ sdk_path="${ANNOYO_SDK_PATH:-$(xcrun --sdk macosx --show-sdk-path)}"
 
 cd "$repo_root"
 
+xcrun swift-format lint \
+    --strict \
+    --configuration .swift-format \
+    --recursive \
+    Sources \
+    Tests \
+    Packaging \
+    Package.swift
+
 ui_shell_failed=0
 if rg -Fq 'Canvas {' Sources/AnnoyO/StatusBarIcon.swift; then
     echo "FAILED: menu bar label uses Canvas instead of a system-renderable image" >&2
@@ -58,7 +67,7 @@ if (( ui_shell_failed )); then
     exit 1
 fi
 
-if rg -q 'togglePlayPauseCommand\.addTarget' Sources/AnnoyO/PlayerController.swift; then
+if rg -q 'registerRemoteCommand\(commands\.togglePlayPauseCommand\)' Sources/AnnoyO/PlayerController.swift; then
     echo "PASS: media play/pause toggle command registration"
 else
     echo "FAILED: media play/pause toggle command is not registered" >&2
@@ -102,7 +111,7 @@ else
     roaming_role_failed=1
 fi
 
-if rg -Fq '? Array(0 ... 6)' Sources/AnnoyO/RollerLoopLayout.swift \
+if rg -Fq '? Array(0...6)' Sources/AnnoyO/RollerLoopLayout.swift \
     && rg -Fq 'recenterIfNeeded(clipView)' Sources/AnnoyO/MenuBarView.swift \
     && ! rg -Fq 'boundaryWrapTarget' Sources/AnnoyO; then
     echo "PASS: sparse rollers use complete repeated cycles and distance-preserving recentering"
@@ -132,6 +141,7 @@ swiftc \
     Sources/AnnoyO/BilibiliService.swift \
     Sources/AnnoyO/PlayerController.swift \
     Tests/AnnoyOChecks/MockBilibiliURLProtocol.swift \
+    Tests/AnnoyOChecks/MockAudioRangeURLProtocol.swift \
     Tests/AnnoyOChecks/main.swift \
     -o .build/annoyo-checks
 

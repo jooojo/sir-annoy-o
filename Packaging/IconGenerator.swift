@@ -22,7 +22,7 @@ enum IconGenerator {
             ("icon_256x256.png", 256),
             ("icon_256x256@2x.png", 512),
             ("icon_512x512.png", 512),
-            ("icon_512x512@2x.png", 1024)
+            ("icon_512x512@2x.png", 1024),
         ]
 
         for variant in variants {
@@ -32,18 +32,20 @@ enum IconGenerator {
     }
 
     private static func render(size: Int) throws -> Data {
-        guard let bitmap = NSBitmapImageRep(
-            bitmapDataPlanes: nil,
-            pixelsWide: size,
-            pixelsHigh: size,
-            bitsPerSample: 8,
-            samplesPerPixel: 4,
-            hasAlpha: true,
-            isPlanar: false,
-            colorSpaceName: .deviceRGB,
-            bytesPerRow: 0,
-            bitsPerPixel: 0
-        ) else {
+        guard
+            let bitmap = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: size,
+                pixelsHigh: size,
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+            )
+        else {
             throw IconError.renderFailed
         }
 
@@ -70,20 +72,22 @@ enum IconGenerator {
 
         let gradient = NSGradient(colors: [
             NSColor(red: 0.23, green: 0.24, blue: 0.25, alpha: 1),
-            NSColor(red: 0.12, green: 0.13, blue: 0.14, alpha: 1)
+            NSColor(red: 0.12, green: 0.13, blue: 0.14, alpha: 1),
         ])!
         gradient.draw(in: iconRect, angle: -45)
 
         let glow = NSGradient(colors: [
             NSColor.white.withAlphaComponent(0.045),
-            NSColor.white.withAlphaComponent(0)
+            NSColor.white.withAlphaComponent(0),
         ])!
-        glow.draw(in: NSBezierPath(ovalIn: NSRect(
-            x: -CGFloat(size) * 0.15,
-            y: CGFloat(size) * 0.45,
-            width: CGFloat(size) * 0.9,
-            height: CGFloat(size) * 0.75
-        )), relativeCenterPosition: .zero)
+        glow.draw(
+            in: NSBezierPath(
+                ovalIn: NSRect(
+                    x: -CGFloat(size) * 0.15,
+                    y: CGFloat(size) * 0.45,
+                    width: CGFloat(size) * 0.9,
+                    height: CGFloat(size) * 0.75
+                )), relativeCenterPosition: .zero)
 
         drawAnnoyOHorn(size: CGFloat(size), context: context)
 
@@ -207,20 +211,24 @@ enum IconGenerator {
             xRadius: 15 * scale,
             yRadius: 15 * scale
         ).fill()
-        NSBezierPath(ovalIn: NSRect(
-            x: 812 * scale,
-            y: (1024 - 631) * scale,
-            width: 76 * scale,
-            height: 274 * scale
-        )).fill()
+        NSBezierPath(
+            ovalIn: NSRect(
+                x: 812 * scale,
+                y: (1024 - 631) * scale,
+                width: 76 * scale,
+                height: 274 * scale
+            )
+        ).fill()
 
         bellInterior.setFill()
-        NSBezierPath(ovalIn: NSRect(
-            x: 830 * scale,
-            y: (1024 - 596) * scale,
-            width: 40 * scale,
-            height: 204 * scale
-        )).fill()
+        NSBezierPath(
+            ovalIn: NSRect(
+                x: 830 * scale,
+                y: (1024 - 596) * scale,
+                width: 40 * scale,
+                height: 204 * scale
+            )
+        ).fill()
 
         NSGraphicsContext.restoreGraphicsState()
     }

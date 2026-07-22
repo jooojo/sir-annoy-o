@@ -34,7 +34,7 @@ enum RoamingPlaylist {
         }
 
         guard let currentID = requestedCurrentID,
-              let currentIndex = uniqueItems.firstIndex(where: { $0.id == currentID })
+            let currentIndex = uniqueItems.firstIndex(where: { $0.id == currentID })
         else {
             return Window(items: Array(uniqueItems.prefix(3)), currentID: nil)
         }
@@ -42,7 +42,7 @@ enum RoamingPlaylist {
         let lowerBound = max(uniqueItems.startIndex, currentIndex - 1)
         let upperBound = min(uniqueItems.endIndex, currentIndex + 2)
         return Window(
-            items: Array(uniqueItems[lowerBound ..< upperBound]),
+            items: Array(uniqueItems[lowerBound..<upperBound]),
             currentID: currentID
         )
     }
@@ -70,13 +70,14 @@ enum RoamingPlaylist {
         currentID: String?
     ) -> Window {
         guard let currentID,
-              let currentIndex = items.firstIndex(where: { $0.id == currentID })
+            let currentIndex = items.firstIndex(where: { $0.id == currentID })
         else {
             let candidates = items.filter { $0.id != video.id } + [video]
             return normalized(items: candidates, currentID: nil)
         }
 
-        let previous = currentIndex > items.startIndex
+        let previous =
+            currentIndex > items.startIndex
             ? items[currentIndex - 1]
             : nil
         let current = items[currentIndex]
@@ -95,8 +96,8 @@ enum RoamingPlaylist {
         currentID: String?
     ) -> VideoSearchResult? {
         guard let currentID,
-              let currentIndex = items.firstIndex(where: { $0.id == currentID }),
-              items.indices.contains(currentIndex + 1)
+            let currentIndex = items.firstIndex(where: { $0.id == currentID }),
+            items.indices.contains(currentIndex + 1)
         else { return nil }
         return items[currentIndex + 1]
     }
@@ -169,7 +170,7 @@ enum BilibiliError: LocalizedError, Sendable {
         switch self {
         case .invalidResponse:
             "Bilibili 返回了无法识别的数据"
-        case let .api(_, message):
+        case .api(_, let message):
             message.isEmpty ? "Bilibili 请求失败" : message
         case .noAudio:
             "这个视频没有可用的音轨"

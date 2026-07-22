@@ -62,8 +62,8 @@ struct MenuBarView: View {
                             using: scrollProxy,
                             playlistID: controller.playbackQueue.savedPlaylistID
                         )
-                            .id(controller.playbackQueue.savedPlaylistID)
-                            .transition(playlistSlideTransition)
+                        .id(controller.playbackQueue.savedPlaylistID)
+                        .transition(playlistSlideTransition)
                     } else {
                         searchResultsPanel(using: scrollProxy)
                             .id("search-results")
@@ -83,16 +83,17 @@ struct MenuBarView: View {
         .task { controller.refreshAccount() }
         .onAppear {
             guard !initialSearchResults.isEmpty,
-                  displayedSearchResults.isEmpty
+                displayedSearchResults.isEmpty
             else { return }
             displayedSearchResults = initialSearchResults
             mainPanelMode = .search
         }
         .onReceive(controller.$searchResults) { results in
             guard activeSearchTransitionID == nil else { return }
-            guard !(mainPanelMode == .search
-                && results.isEmpty
-                && !displayedSearchResults.isEmpty)
+            guard
+                !(mainPanelMode == .search
+                    && results.isEmpty
+                    && !displayedSearchResults.isEmpty)
             else { return }
             displayedSearchResults = results
         }
@@ -316,118 +317,119 @@ struct MenuBarView: View {
             GlassContentDivider()
 
             if controller.playbackQueue.items.isEmpty {
-                    VStack(spacing: 8) {
-                        Image(systemName: "text.line.first.and.arrowtriangle.forward")
-                            .font(.system(size: 24, weight: .light))
-                        Text("从搜索结果加入想听的内容")
-                            .font(.system(size: 10, weight: .medium))
-                    }
-                    .foregroundStyle(.tertiary)
-                    .frame(height: rollerHeight)
+                VStack(spacing: 8) {
+                    Image(systemName: "text.line.first.and.arrowtriangle.forward")
+                        .font(.system(size: 24, weight: .light))
+                    Text("从搜索结果加入想听的内容")
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .foregroundStyle(.tertiary)
+                .frame(height: rollerHeight)
             } else {
-                    ScrollView {
-                        VStack(spacing: 0) {
-                            Color.clear.frame(height: rollerEndInset)
-                            ForEach(rollerItems) { item in
-                                let video = item.video
-                                let isCurrent = video.id == displayedCurrentVideo?.id
-                                let role = queueItemRole(for: video)
-                                GeometryReader { geometry in
-                                    RollerQueueRow(
-                                        index: item.logicalIndex + 1,
-                                        video: video,
-                                        isCurrent: isCurrent,
-                                        playbackState: isCurrent ? controller.playbackState : .idle,
-                                        elapsed: isCurrent ? controller.elapsed : 0,
-                                        duration: isCurrent ? controller.duration : 0,
-                                        audioLevel: controller.audioLevel,
-                                        role: role,
-                                        togglePlaybackAction: { controller.togglePlayback() },
-                                        seekAction: { controller.seek(to: $0) },
-                                        playAction: { controller.playQueued(video) },
-                                        pinAction: {
-                                            withAnimation(.easeInOut(duration: 0.22)) {
-                                                controller.playbackQueue.moveToTop(video)
-                                            }
-                                        },
-                                        replaceRoamingNextAction: {
-                                            controller.replaceRoamingNext(with: video)
-                                        },
-                                        replaceRoamingRecommendationAction: {
-                                            controller.replaceRoamingNextRecommendation()
-                                        },
-                                        removeAction: { controller.removeFromQueue(video) },
-                                        openOriginalAction: { controller.openVideo(video) }
-                                    )
-                                    .scaleEffect(rollerScale(for: geometry))
-                                    .offset(x: rollerHorizontalInset(for: geometry))
-                                    .opacity(rollerOpacity(for: geometry))
-                                }
-                                .frame(height: isCurrent ? 100 : 46)
-                                .id(item.id)
-                                .transition(.asymmetric(
+                ScrollView {
+                    VStack(spacing: 0) {
+                        Color.clear.frame(height: rollerEndInset)
+                        ForEach(rollerItems) { item in
+                            let video = item.video
+                            let isCurrent = video.id == displayedCurrentVideo?.id
+                            let role = queueItemRole(for: video)
+                            GeometryReader { geometry in
+                                RollerQueueRow(
+                                    index: item.logicalIndex + 1,
+                                    video: video,
+                                    isCurrent: isCurrent,
+                                    playbackState: isCurrent ? controller.playbackState : .idle,
+                                    elapsed: isCurrent ? controller.elapsed : 0,
+                                    duration: isCurrent ? controller.duration : 0,
+                                    audioLevel: controller.audioLevel,
+                                    role: role,
+                                    togglePlaybackAction: { controller.togglePlayback() },
+                                    seekAction: { controller.seek(to: $0) },
+                                    playAction: { controller.playQueued(video) },
+                                    pinAction: {
+                                        withAnimation(.easeInOut(duration: 0.22)) {
+                                            controller.playbackQueue.moveToTop(video)
+                                        }
+                                    },
+                                    replaceRoamingNextAction: {
+                                        controller.replaceRoamingNext(with: video)
+                                    },
+                                    replaceRoamingRecommendationAction: {
+                                        controller.replaceRoamingNextRecommendation()
+                                    },
+                                    removeAction: { controller.removeFromQueue(video) },
+                                    openOriginalAction: { controller.openVideo(video) }
+                                )
+                                .scaleEffect(rollerScale(for: geometry))
+                                .offset(x: rollerHorizontalInset(for: geometry))
+                                .opacity(rollerOpacity(for: geometry))
+                            }
+                            .frame(height: isCurrent ? 100 : 46)
+                            .id(item.id)
+                            .transition(
+                                .asymmetric(
                                     insertion: .opacity,
                                     removal: .move(edge: .trailing).combined(with: .opacity)
                                 ))
-                            }
-                            Color.clear.frame(height: rollerEndInset)
                         }
-                        .blur(radius: rollerBlur)
-                        .scaleEffect(x: 1, y: rollerCompression, anchor: .center)
-                        .background {
-                            if let playlistID {
-                                RollerScrollPositionBridge(
-                                    initialOffset: playlistScrollOffsets[playlistID],
-                                    cycleCount: RollerLoopLayout.cycles(
-                                        forItemCount: controller.playbackQueue.items.count
-                                    ).count,
-                                    cycleContentInset: rollerEndInset,
-                                    onOffsetChange: { offset in
-                                        rememberScrollOffset(offset, for: playlistID)
-                                    },
-                                    onRestoreCompleted: {
-                                        finishRestoringScroll(for: playlistID)
-                                    }
-                                )
-                            }
-                        }
+                        Color.clear.frame(height: rollerEndInset)
                     }
-                    .coordinateSpace(name: "queueRoller")
-                    .scrollIndicators(.never)
-                    .frame(height: rollerHeight)
-                    .mask {
-                        LinearGradient(
-                            stops: [
-                                .init(color: .clear, location: 0),
-                                .init(color: .white, location: 0.09),
-                                .init(color: .white, location: 0.91),
-                                .init(color: .clear, location: 1)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    }
-                    .onAppear {
-                        restoringScrollForPlaylistID = playlistID
+                    .blur(radius: rollerBlur)
+                    .scaleEffect(x: 1, y: rollerCompression, anchor: .center)
+                    .background {
                         if let playlistID {
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                finishRestoringScroll(for: playlistID)
-                            }
-                        }
-                        if playlistID.flatMap({ playlistScrollOffsets[$0] }) == nil {
-                            scrollToCurrent(
-                                for: playlistID,
-                                using: scrollProxy,
-                                animated: false
+                            RollerScrollPositionBridge(
+                                initialOffset: playlistScrollOffsets[playlistID],
+                                cycleCount: RollerLoopLayout.cycles(
+                                    forItemCount: controller.playbackQueue.items.count
+                                ).count,
+                                cycleContentInset: rollerEndInset,
+                                onOffsetChange: { offset in
+                                    rememberScrollOffset(offset, for: playlistID)
+                                },
+                                onRestoreCompleted: {
+                                    finishRestoringScroll(for: playlistID)
+                                }
                             )
                         }
                     }
-                    .onReceive(controller.playbackQueue.currentSelectionChanged) {
+                }
+                .coordinateSpace(name: "queueRoller")
+                .scrollIndicators(.never)
+                .frame(height: rollerHeight)
+                .mask {
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0),
+                            .init(color: .white, location: 0.09),
+                            .init(color: .white, location: 0.91),
+                            .init(color: .clear, location: 1),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+                .onAppear {
+                    restoringScrollForPlaylistID = playlistID
+                    if let playlistID {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            finishRestoringScroll(for: playlistID)
+                        }
+                    }
+                    if playlistID.flatMap({ playlistScrollOffsets[$0] }) == nil {
                         scrollToCurrent(
                             for: playlistID,
-                            using: scrollProxy
+                            using: scrollProxy,
+                            animated: false
                         )
                     }
+                }
+                .onReceive(controller.playbackQueue.currentSelectionChanged) {
+                    scrollToCurrent(
+                        for: playlistID,
+                        using: scrollProxy
+                    )
+                }
             }
         }
         .padding(.horizontal, 14)
@@ -516,7 +518,7 @@ struct MenuBarView: View {
             var step = 0
             repeat {
                 guard !Task.isCancelled,
-                      activeSearchTransitionID == transitionID
+                    activeSearchTransitionID == transitionID
                 else { return }
                 spinVisibleRoller(using: proxy, step: step)
                 step += 1
@@ -524,7 +526,7 @@ struct MenuBarView: View {
             } while controller.isSearching || step < 4
 
             guard !Task.isCancelled,
-                  activeSearchTransitionID == transitionID
+                activeSearchTransitionID == transitionID
             else { return }
             displayedSearchResults = controller.searchResults
             withAnimation(.easeInOut(duration: 0.22)) {
@@ -556,7 +558,7 @@ struct MenuBarView: View {
         }
 
         panelTransitionTask = Task { @MainActor in
-            for step in 0 ..< 3 {
+            for step in 0..<3 {
                 guard !Task.isCancelled else { return }
                 spinVisibleRoller(using: proxy, step: step)
                 try? await Task.sleep(for: .milliseconds(120))
@@ -615,13 +617,13 @@ struct MenuBarView: View {
 
     private func queueItemRole(for video: VideoSearchResult) -> RollerQueueItemRole {
         guard controller.playbackQueue.isRoaming,
-              let currentID = controller.playbackQueue.currentID,
-              let currentIndex = controller.playbackQueue.items.firstIndex(where: {
-                  $0.id == currentID
-              }),
-              let videoIndex = controller.playbackQueue.items.firstIndex(where: {
-                  $0.id == video.id
-              })
+            let currentID = controller.playbackQueue.currentID,
+            let currentIndex = controller.playbackQueue.items.firstIndex(where: {
+                $0.id == currentID
+            }),
+            let videoIndex = controller.playbackQueue.items.firstIndex(where: {
+                $0.id == video.id
+            })
         else { return .regular }
 
         if videoIndex < currentIndex { return .roamingPrevious }
@@ -690,7 +692,8 @@ struct MenuBarView: View {
 
     private func rememberScrollOffset(_ offset: CGFloat, for playlistID: UUID) {
         if let previousOffset = playlistScrollOffsets[playlistID],
-           abs(previousOffset - offset) <= 0.5 {
+            abs(previousOffset - offset) <= 0.5
+        {
             return
         }
         playlistScrollOffsets[playlistID] = offset
@@ -744,7 +747,7 @@ struct MenuBarView: View {
     private func returnToPlayingAndAnimate(using proxy: ScrollViewProxy) {
         let switchesPlaylist = !controller.isDisplayingPlayingPlaylist
         guard let currentVideoID = controller.currentVideo?.id,
-              controller.returnToPlayingPlaylist()
+            controller.returnToPlayingPlaylist()
         else { return }
         let delay = switchesPlaylist ? 0.32 : 0
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
@@ -761,8 +764,8 @@ struct MenuBarView: View {
 
     private func beginRenamingPlaylist() {
         guard !controller.playbackQueue.isRoaming,
-              controller.playbackQueue.savedPlaylistID != nil,
-              let name = controller.playbackQueue.savedPlaylistName
+            controller.playbackQueue.savedPlaylistID != nil,
+            let name = controller.playbackQueue.savedPlaylistName
         else { return }
         playlistNameDraft = name
         isRenamingPlaylist = true
@@ -774,7 +777,7 @@ struct MenuBarView: View {
     private func finishRenamingPlaylist() {
         guard isRenamingPlaylist else { return }
         guard let id = controller.playbackQueue.savedPlaylistID,
-              let playlist = controller.savedPlaylists.playlists.first(where: { $0.id == id })
+            let playlist = controller.savedPlaylists.playlists.first(where: { $0.id == id })
         else {
             cancelRenamingPlaylist()
             return
@@ -950,19 +953,21 @@ private struct RollerScrollPositionBridge: NSViewRepresentable {
 
         private func recenterIfNeeded(_ clipView: NSClipView) {
             guard !isRecentering,
-                  cycleCount > 1,
-                  let scrollView,
-                  let documentView = scrollView.documentView
+                cycleCount > 1,
+                let scrollView,
+                let documentView = scrollView.documentView
             else { return }
 
-            guard let targetY = RollerLoopLayout.recenteredOffset(
-                currentOffset: clipView.bounds.origin.y,
-                viewportHeight: clipView.bounds.height,
-                documentMinimumY: documentView.bounds.minY,
-                documentHeight: documentView.bounds.height,
-                cycleContentInset: cycleContentInset,
-                cycleCount: cycleCount
-            ) else { return }
+            guard
+                let targetY = RollerLoopLayout.recenteredOffset(
+                    currentOffset: clipView.bounds.origin.y,
+                    viewportHeight: clipView.bounds.height,
+                    documentMinimumY: documentView.bounds.minY,
+                    documentHeight: documentView.bounds.height,
+                    cycleContentInset: cycleContentInset,
+                    cycleCount: cycleCount
+                )
+            else { return }
             isRecentering = true
             clipView.scroll(
                 to: NSPoint(
@@ -1024,11 +1029,12 @@ private struct AnimatedPlaybackPattern: View {
         TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isAnimating)) { _ in
             let motion = audioLevel.snapshot
             Canvas { context, size in
-                for lineIndex in 0 ..< 7 {
+                for lineIndex in 0..<7 {
                     var path = Path()
                     let line = Double(lineIndex)
                     let baseY = size.height * (0.15 + CGFloat(lineIndex) * 0.115)
-                    let bassMotion = motion.low * 0.58
+                    let bassMotion =
+                        motion.low * 0.58
                         + motion.lowMid * 0.28
                         + motion.energy * 0.14
                     let energyScale = 0.68 + bassMotion * 1.02 + motion.pulse * 0.26
@@ -1038,22 +1044,27 @@ private struct AnimatedPlaybackPattern: View {
                     for x in stride(from: CGFloat.zero, through: size.width, by: 3) {
                         let progress = Double(x / max(size.width, 1))
                         let frequency = 2.2 + line * 0.11
-                        let primaryPhase = progress * Double.pi * frequency
+                        let primaryPhase =
+                            progress * Double.pi * frequency
                             + motion.phase * (0.88 + line * 0.045)
                             + line * (0.72 + motion.lowMid * 0.035)
-                        let secondaryPhase = progress * Double.pi * 4.0
+                        let secondaryPhase =
+                            progress * Double.pi * 4.0
                             - motion.phase * (0.32 + motion.lowMid * 0.08)
                             + line + motion.midHigh * 0.24
                         let wave = sin(primaryPhase)
                         let secondary = cos(secondaryPhase)
-                        let onsetShape = sin(
-                            progress * Double.pi * 3.0 + line * 0.55
-                        ) * motion.pulse * (1.15 + line * 0.08)
-                        let y = baseY + CGFloat(
-                            wave * amplitude
-                                + secondary * secondaryAmplitude
-                                + onsetShape
-                        )
+                        let onsetShape =
+                            sin(
+                                progress * Double.pi * 3.0 + line * 0.55
+                            ) * motion.pulse * (1.15 + line * 0.08)
+                        let y =
+                            baseY
+                            + CGFloat(
+                                wave * amplitude
+                                    + secondary * secondaryAmplitude
+                                    + onsetShape
+                            )
                         if x == 0 {
                             path.move(to: CGPoint(x: x, y: y))
                         } else {
@@ -1085,7 +1096,8 @@ private struct AnimatedPlaybackPattern: View {
 
                 let glowX = size.width * CGFloat(0.5 + sin(motion.phase * 0.55) * 0.32)
                 let glowY = size.height * CGFloat(0.48 + cos(motion.phase * 0.38) * 0.18)
-                let glowRadiusValue = 24.0
+                let glowRadiusValue =
+                    24.0
                     + motion.low * 10
                     + motion.energy * 4
                     + motion.pulse * 3
@@ -1101,7 +1113,7 @@ private struct AnimatedPlaybackPattern: View {
                     with: .radialGradient(
                         Gradient(colors: [
                             Color.primary.opacity(0.015 + motion.energy * 0.018),
-                            .clear
+                            .clear,
                         ]),
                         center: CGPoint(x: glowX, y: glowY),
                         startRadius: 0,
@@ -1272,7 +1284,7 @@ private struct RollerQueueRow: View {
                 switch value {
                 case .first(true):
                     beginScrubbingIfNeeded()
-                case let .second(true, drag?):
+                case .second(true, let drag?):
                     beginScrubbingIfNeeded()
                     guard let scrubStartProgress else { return }
                     scrubProgress = min(
@@ -1289,9 +1301,9 @@ private struct RollerQueueRow: View {
                     scrubProgress = nil
                 }
                 guard canScrub,
-                      case let .second(true, drag?) = value,
-                      abs(drag.translation.width) >= 1,
-                      let scrubProgress
+                    case .second(true, let drag?) = value,
+                    abs(drag.translation.width) >= 1,
+                    let scrubProgress
                 else { return }
                 seekAction(scrubProgress * duration)
             }
@@ -1325,9 +1337,9 @@ private struct RollerQueueRow: View {
             }
 
             queuedActions
-            .foregroundStyle(.secondary)
-            .opacity(isHovering ? 1 : 0)
-            .allowsHitTesting(isHovering)
+                .foregroundStyle(.secondary)
+                .opacity(isHovering ? 1 : 0)
+                .allowsHitTesting(isHovering)
         }
         .padding(.horizontal, 7)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1521,7 +1533,7 @@ private struct SearchResultsRoller: View {
                     .init(color: .clear, location: 0),
                     .init(color: .white, location: 0.09),
                     .init(color: .white, location: 0.91),
-                    .init(color: .clear, location: 1)
+                    .init(color: .clear, location: 1),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -1635,32 +1647,32 @@ private struct SearchResultRow: View {
         HStack(spacing: 5) {
             Button(action: action) {
                 HStack(spacing: 10) {
-                AsyncImage(url: video.coverURL) { phase in
-                    if case let .success(image) = phase {
-                        image.resizable().scaledToFill()
-                    } else {
-                        Color.secondary.opacity(0.12)
-                            .overlay { Image(systemName: "play.rectangle").foregroundStyle(.secondary) }
+                    AsyncImage(url: video.coverURL) { phase in
+                        if case .success(let image) = phase {
+                            image.resizable().scaledToFill()
+                        } else {
+                            Color.secondary.opacity(0.12)
+                                .overlay { Image(systemName: "play.rectangle").foregroundStyle(.secondary) }
+                        }
                     }
-                }
-                .frame(width: 58, height: 38)
-                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .frame(width: 58, height: 38)
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(video.title)
-                        .font(.system(size: 11, weight: isCurrent ? .semibold : .medium))
-                        .lineLimit(1)
-                        .foregroundStyle(.primary)
-                    HStack(spacing: 5) {
-                        Text(video.creator).lineLimit(1)
-                        Text("·")
-                        Text(video.playCountText)
-                        Text("·")
-                        Text(video.durationText)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(video.title)
+                            .font(.system(size: 11, weight: isCurrent ? .semibold : .medium))
+                            .lineLimit(1)
+                            .foregroundStyle(.primary)
+                        HStack(spacing: 5) {
+                            Text(video.creator).lineLimit(1)
+                            Text("·")
+                            Text(video.playCountText)
+                            Text("·")
+                            Text(video.durationText)
+                        }
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
                     }
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                }
 
                     Spacer(minLength: 4)
 

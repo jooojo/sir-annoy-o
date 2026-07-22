@@ -8,7 +8,8 @@ actor BilibiliService {
     private var wbiKeys: WBIKeys?
     private var deviceCookie: String?
 
-    private static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0 Safari/537.36"
+    private static let userAgent =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0 Safari/537.36"
 
     init(session: URLSession? = nil) {
         if let session {
@@ -41,7 +42,7 @@ actor BilibiliService {
             "__refresh__": "true",
             "search_type": "video",
             "tids": "0",
-            "highlight": "1"
+            "highlight": "1",
         ]
         let url = apiURL(path: "/x/web-interface/search/type", parameters: parameters)
         let response: SearchResponse = try await request(url)
@@ -73,7 +74,7 @@ actor BilibiliService {
             parameters: [
                 "bvid": video.bvid,
                 "need_operation_card": "1",
-                "web_rm_repeat": "1"
+                "web_rm_repeat": "1",
             ]
         )
         let response: RelatedVideosResponse = try await request(url, referer: video.webURL)
@@ -81,7 +82,7 @@ actor BilibiliService {
         var seenIDs = Set([video.id])
         return (response.data ?? []).compactMap { item in
             guard !item.bvid.isEmpty,
-                  seenIDs.insert(item.bvid).inserted
+                seenIDs.insert(item.bvid).inserted
             else { return nil }
             return VideoSearchResult(
                 bvid: item.bvid,
@@ -139,7 +140,7 @@ actor BilibiliService {
             "dm_img_list": "[]",
             "dm_img_str": Self.fingerprintToken(),
             "dm_cover_img_str": Self.fingerprintToken(),
-            "dm_img_inter": #"{"ds":[],"wh":[3840,2160,0],"of":[30,0,0]}"#
+            "dm_img_inter": #"{"ds":[],"wh":[3840,2160,0],"of":[30,0,0]}"#,
         ]
         if !hasLoginCookie {
             playParameters["try_look"] = "1"
@@ -153,7 +154,7 @@ actor BilibiliService {
         try validate(playResponse.code, playResponse.message)
 
         guard let audio = playResponse.data?.dash?.audio.max(by: { $0.bandwidth < $1.bandwidth }),
-              let streamURL = audio.primaryURL
+            let streamURL = audio.primaryURL
         else {
             throw BilibiliError.noAudio
         }
@@ -170,7 +171,7 @@ actor BilibiliService {
     func playbackHeaders(for video: VideoSearchResult) -> [String: String] {
         [
             "User-Agent": Self.userAgent,
-            "Referer": video.webURL?.absoluteString ?? "https://www.bilibili.com/"
+            "Referer": video.webURL?.absoluteString ?? "https://www.bilibili.com/",
         ]
     }
 
@@ -241,9 +242,9 @@ actor BilibiliService {
         let url = apiURL(path: "/x/web-interface/nav", parameters: [:])
         let response: NavResponse = try await request(url)
         guard let imageURL = response.data?.wbiImage.imageURL,
-              let subURL = response.data?.wbiImage.subURL,
-              let imageKey = WBISigner.key(from: imageURL),
-              let subKey = WBISigner.key(from: subURL)
+            let subURL = response.data?.wbiImage.subURL,
+            let imageKey = WBISigner.key(from: imageURL),
+            let subKey = WBISigner.key(from: subURL)
         else {
             throw BilibiliError.invalidResponse
         }
@@ -268,7 +269,7 @@ actor BilibiliService {
         }
 
         let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, 200 ..< 300 ~= http.statusCode else {
+        guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
             throw BilibiliError.invalidResponse
         }
         storeResponseCookies(from: http, for: url)
@@ -333,14 +334,16 @@ actor BilibiliService {
     private func storeDeviceCookies(_ data: FingerprintData) {
         let values = ["buvid3": data.b3, "buvid4": data.b4]
         for (name, value) in values where !value.isEmpty {
-            guard let cookie = HTTPCookie(properties: [
-                .domain: ".bilibili.com",
-                .path: "/",
-                .name: name,
-                .value: value,
-                .secure: "TRUE",
-                .expires: Date().addingTimeInterval(365 * 24 * 60 * 60)
-            ]) else { continue }
+            guard
+                let cookie = HTTPCookie(properties: [
+                    .domain: ".bilibili.com",
+                    .path: "/",
+                    .name: name,
+                    .value: value,
+                    .secure: "TRUE",
+                    .expires: Date().addingTimeInterval(365 * 24 * 60 * 60),
+                ])
+            else { continue }
             cookieStorage.setCookie(cookie)
         }
     }

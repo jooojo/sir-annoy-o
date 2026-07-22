@@ -6,8 +6,8 @@ enum RollerLoopLayout {
     static func cycles(forItemCount itemCount: Int) -> [Int] {
         guard itemCount > 0 else { return [] }
         return itemCount <= sparseItemLimit
-            ? Array(0 ... 6)
-            : Array(0 ... 2)
+            ? Array(0...6)
+            : Array(0...2)
     }
 
     static func middleCycle(forItemCount itemCount: Int) -> Int {
@@ -29,7 +29,8 @@ enum RollerLoopLayout {
         let cycleHeight = repeatedContentHeight / CGFloat(cycleCount)
         guard cycleHeight > 0 else { return nil }
 
-        let relativeCenter = currentOffset
+        let relativeCenter =
+            currentOffset
             + viewportHeight / 2
             - documentMinimumY
             - cycleContentInset

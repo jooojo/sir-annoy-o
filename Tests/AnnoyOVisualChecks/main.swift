@@ -61,7 +61,7 @@ enum AnnoyOVisualChecks {
             sampleVideo(id: "BV1SEARCH3", title: "安静读书用的钢琴曲合集"),
             sampleVideo(id: "BV1SEARCH4", title: "凌晨电台与温柔的人声"),
             sampleVideo(id: "BV1SEARCH5", title: "无歌词专注音乐 90 分钟"),
-            sampleVideo(id: "BV1SEARCH6", title: "周末咖啡馆背景音乐")
+            sampleVideo(id: "BV1SEARCH6", title: "周末咖啡馆背景音乐"),
         ]
         let searchResultsOutput = render(
             view: MenuBarView(
@@ -87,13 +87,13 @@ enum AnnoyOVisualChecks {
                 previewCacheSummary: previewCacheSummary,
                 onClose: {}
             )
-                .background(.regularMaterial),
+            .background(.regularMaterial),
             width: 304,
             name: "annoyo-settings-roaming-light.png",
             settleTime: 0.5
         )
         controller.createPlaylist()
-        let userPlaylistItems = (1 ... 20).map { index in
+        let userPlaylistItems = (1...20).map { index in
             sampleVideo(
                 id: "BV1LIST\(index)",
                 title: "播放列表里的第 \(index) 首音频"
@@ -119,7 +119,7 @@ enum AnnoyOVisualChecks {
                 previewCacheSummary: previewCacheSummary,
                 onClose: {}
             )
-                .background(.regularMaterial),
+            .background(.regularMaterial),
             width: 304,
             name: "annoyo-settings-user-playlist-light.png",
             settleTime: 0.5
@@ -131,7 +131,7 @@ enum AnnoyOVisualChecks {
                 previewCacheSummary: previewCacheSummary,
                 onClose: {}
             )
-                .background(.regularMaterial),
+            .background(.regularMaterial),
             width: 304,
             name: "annoyo-settings-user-playlist-dark.png",
             settleTime: 0.5,
@@ -170,14 +170,16 @@ enum AnnoyOVisualChecks {
         )
 
         controller.play(first)
-        wait(until: {
-            controller.playbackState.isPlaying || {
-                if case .failed = controller.playbackState { return true }
-                return false
-            }()
-        }, timeout: 35)
+        wait(
+            until: {
+                controller.playbackState.isPlaying
+                    || {
+                        if case .failed = controller.playbackState { return true }
+                        return false
+                    }()
+            }, timeout: 35)
 
-        if case let .failed(message) = controller.playbackState {
+        if case .failed(let message) = controller.playbackState {
             fail("Playback failed during visual check: \(message)")
         }
         guard controller.playbackState.isPlaying else {
@@ -225,7 +227,8 @@ enum AnnoyOVisualChecks {
         settleTime: TimeInterval,
         colorScheme: ColorScheme = .light
     ) -> URL {
-        let rootView = view
+        let rootView =
+            view
             .environment(\.colorScheme, colorScheme)
         let hostingView = NSHostingView(rootView: rootView)
         hostingView.frame = NSRect(x: 0, y: 0, width: width, height: 1)

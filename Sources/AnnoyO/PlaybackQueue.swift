@@ -7,8 +7,9 @@ final class PlaybackQueue: ObservableObject {
     @Published private(set) var currentID: String? {
         didSet {
             if !suppressesCurrentSelectionChanged,
-               currentID != nil,
-               currentID != oldValue {
+                currentID != nil,
+                currentID != oldValue
+            {
                 currentSelectionChanged.send()
             }
         }
@@ -169,8 +170,8 @@ final class PlaybackQueue: ObservableObject {
     @discardableResult
     func retreat() -> VideoSearchResult? {
         guard let currentID,
-              let index = items.firstIndex(where: { $0.id == currentID }),
-              items.indices.contains(index - 1)
+            let index = items.firstIndex(where: { $0.id == currentID }),
+            items.indices.contains(index - 1)
         else { return nil }
         let previous = items[index - 1]
         select(previous)
@@ -191,7 +192,7 @@ final class PlaybackQueue: ObservableObject {
     func move(from source: IndexSet, to destination: Int) {
         let sourceIndices = source.sorted()
         guard !sourceIndices.isEmpty,
-              sourceIndices.allSatisfy(items.indices.contains)
+            sourceIndices.allSatisfy(items.indices.contains)
         else { return }
 
         let movingItems = sourceIndices.map { items[$0] }
@@ -211,7 +212,7 @@ final class PlaybackQueue: ObservableObject {
             return
         }
         guard video.id != currentID,
-              items.contains(where: { $0.id == video.id })
+            items.contains(where: { $0.id == video.id })
         else { return }
 
         let remaining = items.filter { $0.id != video.id && $0.id != currentID }
@@ -241,15 +242,18 @@ final class PlaybackQueue: ObservableObject {
     ) {
         suppressesCurrentSelectionChanged = true
         defer { suppressesCurrentSelectionChanged = false }
-        let window = newSavedPlaylistID == RoamingPlaylist.id
+        let window =
+            newSavedPlaylistID == RoamingPlaylist.id
             ? RoamingPlaylist.normalized(items: newItems, currentID: requestedCurrentID)
             : RoamingPlaylist.Window(items: newItems, currentID: requestedCurrentID)
         items = window.items
         if let requestedCurrentID = window.currentID,
-           window.items.contains(where: { $0.id == requestedCurrentID }) {
+            window.items.contains(where: { $0.id == requestedCurrentID })
+        {
             currentID = requestedCurrentID
         } else {
-            currentID = newSavedPlaylistID == RoamingPlaylist.id
+            currentID =
+                newSavedPlaylistID == RoamingPlaylist.id
                 ? nil
                 : window.items.first?.id
         }
@@ -266,9 +270,9 @@ final class PlaybackQueue: ObservableObject {
         after expectedCurrentID: String
     ) -> Bool {
         guard isRoaming,
-              currentID == expectedCurrentID,
-              RoamingPlaylist.next(in: items, currentID: currentID) == nil,
-              !contains(video)
+            currentID == expectedCurrentID,
+            RoamingPlaylist.next(in: items, currentID: currentID) == nil,
+            !contains(video)
         else { return false }
 
         let window = RoamingPlaylist.insertingNext(
@@ -284,8 +288,8 @@ final class PlaybackQueue: ObservableObject {
     @discardableResult
     func replaceRoamingNext(with video: VideoSearchResult) -> Bool {
         guard isRoaming,
-              let currentID,
-              video.id != currentID
+            let currentID,
+            video.id != currentID
         else { return false }
 
         let window = RoamingPlaylist.insertingNext(
@@ -361,7 +365,8 @@ final class PlaybackQueue: ObservableObject {
 
     private static var defaultStorageURL: URL {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return root
+        return
+            root
             .appendingPathComponent("AnnoyO", isDirectory: true)
             .appendingPathComponent("playback-queue.json")
     }

@@ -10,7 +10,7 @@ enum AnnoyOChecks {
             parameters: [
                 "foo": "114",
                 "bar": "514",
-                "baz": "1919810"
+                "baz": "1919810",
             ],
             imageKey: "7cd084941338484aae1ad9425b84077c",
             subKey: "4932caff0ff746eab6f01bf08b70ac45",
@@ -39,6 +39,12 @@ enum AnnoyOChecks {
             "<em class=\"keyword\">音乐</em> &amp; Live".removingHTML == "音乐 & Live",
             "search title HTML cleanup"
         )
+        try await verifyAudioCachePrefetchesBoundedPrefix()
+        try await verifyAudioCachePrefetchStopsWhenRangeIsIgnored()
+        try await verifyAudioCachePrefetchCancellation()
+        try await verifyAudioResourceLoaderSerializesOriginRequests()
+        try await verifyAudioResourceLoaderRejectsEmptyResponses()
+        try await verifyControllerPrefetchesNextTrack()
         verifyPlaybackQueuePersistence()
         verifyRoamingWindow()
         verifyRollerLoopLayout()
@@ -82,6 +88,12 @@ enum AnnoyOChecks {
                 mediaController.playbackOrderMode == .shuffle && !mediaController.canGoNext,
                 "list shuffle excludes the currently playing item from candidates"
             )
+            mediaController.handlePlaybackFailure("模拟音频 CDN 失败")
+            check(
+                mediaController.playbackState == .failed("模拟音频 CDN 失败")
+                    && mediaController.notice == "模拟音频 CDN 失败",
+                "player item failure exits buffering with a visible error"
+            )
             withExtendedLifetime(mediaController) {}
         }
         try await verifyConfirmedLoginFlow()
@@ -107,7 +119,9 @@ enum AnnoyOChecks {
         check(stream.url.scheme == "https", "live DASH audio resolution")
         let headers = await service.playbackHeaders(for: results[0])
         var rangeRequest = URLRequest(url: stream.url)
-        headers.forEach { rangeRequest.setValue($0.value, forHTTPHeaderField: $0.key) }
+        for (field, value) in headers {
+            rangeRequest.setValue(value, forHTTPHeaderField: field)
+        }
         rangeRequest.setValue("bytes=0-65535", forHTTPHeaderField: "Range")
         let (rangeData, rangeResponse) = try await URLSession.shared.data(for: rangeRequest)
         let rangeHTTP = rangeResponse as? HTTPURLResponse
@@ -116,7 +130,7 @@ enum AnnoyOChecks {
                 + "type=\(rangeHTTP?.value(forHTTPHeaderField: "Content-Type") ?? "none") "
                 + "range=\(rangeHTTP?.value(forHTTPHeaderField: "Content-Range") ?? "none")"
         )
-        check((200 ... 299).contains(rangeHTTP?.statusCode ?? -1) && !rangeData.isEmpty, "live CDN range request")
+        check((200...299).contains(rangeHTTP?.statusCode ?? -1) && !rangeData.isEmpty, "live CDN range request")
 
         let asset = AVURLAsset(
             url: stream.url,
@@ -136,7 +150,7 @@ enum AnnoyOChecks {
         controller.play(results[0])
         let playbackDeadline = Date().addingTimeInterval(35)
         while !controller.playbackState.isPlaying, Date() < playbackDeadline {
-            if case let .failed(message) = controller.playbackState {
+            if case .failed(let message) = controller.playbackState {
                 check(false, "controller playback failed: \(message)")
             }
             try await Task.sleep(for: .milliseconds(200))
@@ -299,9 +313,11 @@ enum AnnoyOChecks {
             "deleting the active user playlist falls back to roaming"
         )
         controller.createPlaylist()
-        guard let reusedAfterDelete = store.playlists.first(where: {
-            $0.name == "播放列表1" && $0.id != reusedAfterRename.id
-        }) else {
+        guard
+            let reusedAfterDelete = store.playlists.first(where: {
+                $0.name == "播放列表1" && $0.id != reusedAfterRename.id
+            })
+        else {
             check(false, "deleting frees the default playlist index")
             return
         }
@@ -388,7 +404,8 @@ enum AnnoyOChecks {
 
     private static func verifyRollerLoopLayout() {
         let itemCount = 3
-        let renderedOccurrenceCount = RollerLoopLayout
+        let renderedOccurrenceCount =
+            RollerLoopLayout
             .cycles(forItemCount: itemCount)
             .count * itemCount
         check(
@@ -635,7 +652,7 @@ enum AnnoyOChecks {
                 sampleIndex + chunkSizes[chunkIndex % chunkSizes.count]
             )
             chunked.ingest(
-                Array(samples[sampleIndex ..< end]),
+                Array(samples[sampleIndex..<end]),
                 sourceStartTime: Double(sampleIndex) / sampleRate
             )
             sampleIndex = end
@@ -674,14 +691,14 @@ enum AnnoyOChecks {
         duration: TimeInterval,
         sampleRate: Double
     ) -> [Float] {
-        (0 ..< Int(duration * sampleRate)).map { index in
+        (0..<Int(duration * sampleRate)).map { index in
             Float(amplitude * sin(2 * Double.pi * frequency * Double(index) / sampleRate))
         }
     }
 
     private static func mixedTestSignal(sampleRate: Double) -> [Float] {
         let count = Int(sampleRate * 1.2)
-        return (0 ..< count).map { index in
+        return (0..<count).map { index in
             let time = Double(index) / sampleRate
             let low = sin(2 * Double.pi * 110 * time) * 0.24
             let mid = sin(2 * Double.pi * 1_200 * time) * 0.12
@@ -870,6 +887,282 @@ enum AnnoyOChecks {
 
         store.clear()
         check(store.summary().usedBytes == 0 && store.summary().itemCount == 0, "cache clearing")
+    }
+
+    private static func verifyAudioResourceLoaderSerializesOriginRequests() async throws {
+        let rootURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/range-loader-check-\(UUID().uuidString)", isDirectory: true)
+        let fixtureURL = rootURL.appendingPathComponent("fixture.mp4")
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        try makeAudioFixture(at: fixtureURL)
+        let fixtureData = try Data(contentsOf: fixtureURL)
+        MockAudioRangeURLProtocol.reset(payload: fixtureData)
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockAudioRangeURLProtocol.self]
+        let cache = AudioCache(
+            rootURL: rootURL.appendingPathComponent("cache", isDirectory: true),
+            sessionConfiguration: configuration
+        )
+        let cachedAsset = cache.makeAsset(
+            for: AudioCacheSource(
+                key: AudioCacheKey(bvid: "BV1RANGES", cid: 1, representationID: 30280),
+                url: URL(string: "https://audio.annoyo.test/fixture.m4s")!,
+                headers: [:]
+            )
+        )
+        let playable: Bool
+        do {
+            playable = try await cachedAsset.asset.load(.isPlayable)
+            _ = try await cachedAsset.asset.loadTracks(withMediaType: .audio)
+        } catch {
+            let ranges = MockAudioRangeURLProtocol.requestedRanges.joined(separator: ", ")
+            FileHandle.standardError.write(
+                Data("RANGE LOADER ERROR: \(error) ranges=[\(ranges)]\n".utf8)
+            )
+            throw error
+        }
+        try await Task.sleep(for: .milliseconds(250))
+
+        check(playable, "mock ranged audio asset is playable")
+        check(
+            MockAudioRangeURLProtocol.maximumActiveRequestCount == 1,
+            "audio loader keeps a single origin Range request in flight"
+        )
+        withExtendedLifetime(cachedAsset.resourceLoader) {}
+    }
+
+    private static func verifyAudioResourceLoaderRejectsEmptyResponses() async throws {
+        let rootURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/range-loader-empty-\(UUID().uuidString)", isDirectory: true)
+        let fixtureURL = rootURL.appendingPathComponent("fixture.mp4")
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        try makeAudioFixture(at: fixtureURL)
+        MockAudioRangeURLProtocol.reset(
+            payload: try Data(contentsOf: fixtureURL),
+            responseMode: .emptyPartialContent
+        )
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockAudioRangeURLProtocol.self]
+        let cache = AudioCache(
+            rootURL: rootURL.appendingPathComponent("cache", isDirectory: true),
+            sessionConfiguration: configuration
+        )
+        let cachedAsset = cache.makeAsset(
+            for: AudioCacheSource(
+                key: AudioCacheKey(bvid: "BV1EMPTY", cid: 1, representationID: 30280),
+                url: URL(string: "https://audio.annoyo.test/empty.m4s")!,
+                headers: [:]
+            )
+        )
+
+        do {
+            _ = try await cachedAsset.asset.load(.isPlayable)
+            check(false, "audio loader rejects empty successful Range responses")
+        } catch {
+            check(true, "audio loader rejects empty successful Range responses")
+        }
+        check(
+            MockAudioRangeURLProtocol.requestedRanges.count == 1,
+            "audio loader does not retry an empty successful Range response"
+        )
+        withExtendedLifetime(cachedAsset.resourceLoader) {}
+    }
+
+    private static func verifyAudioCachePrefetchesBoundedPrefix() async throws {
+        let rootURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/prefetch-check-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        MockAudioRangeURLProtocol.reset(payload: Data(repeating: 0x5A, count: 2 * 1_048_576))
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockAudioRangeURLProtocol.self]
+        let cache = AudioCache(rootURL: rootURL, sessionConfiguration: configuration)
+        try await cache.prefetch(
+            AudioCacheSource(
+                key: AudioCacheKey(bvid: "BV1PREFETCH", cid: 1, representationID: 30280),
+                url: URL(string: "https://audio.annoyo.test/prefetch.m4s")!,
+                headers: [:]
+            )
+        )
+
+        check(
+            cache.summary().usedBytes == 1_048_576,
+            "next-track prefetch stores only the bounded audio prefix"
+        )
+        check(
+            MockAudioRangeURLProtocol.requestedRanges == ["bytes=0-1048575"],
+            "next-track prefetch requests only the first 1 MB"
+        )
+    }
+
+    private static func verifyAudioCachePrefetchStopsWhenRangeIsIgnored() async throws {
+        let rootURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/prefetch-full-response-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let payload = Data(repeating: 0x5A, count: 2 * 1_048_576)
+        MockAudioRangeURLProtocol.reset(
+            payload: payload,
+            responseMode: .fullContent
+        )
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockAudioRangeURLProtocol.self]
+        let cache = AudioCache(rootURL: rootURL, sessionConfiguration: configuration)
+        try await cache.prefetch(
+            AudioCacheSource(
+                key: AudioCacheKey(bvid: "BV1FULL", cid: 1, representationID: 30280),
+                url: URL(string: "https://audio.annoyo.test/full-response.m4s")!,
+                headers: [:]
+            )
+        )
+
+        check(
+            cache.summary().usedBytes == 1_048_576,
+            "next-track prefetch stays bounded when the origin ignores Range"
+        )
+        check(
+            MockAudioRangeURLProtocol.deliveredByteCount < payload.count,
+            "next-track prefetch stops downloading an ignored Range response"
+        )
+    }
+
+    private static func verifyAudioCachePrefetchCancellation() async throws {
+        let rootURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/prefetch-cancel-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        MockAudioRangeURLProtocol.reset(payload: Data(repeating: 0x5A, count: 2 * 1_048_576))
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockAudioRangeURLProtocol.self]
+        let cache = AudioCache(rootURL: rootURL, sessionConfiguration: configuration)
+        let task = Task {
+            try await cache.prefetch(
+                AudioCacheSource(
+                    key: AudioCacheKey(bvid: "BV1CANCEL", cid: 1, representationID: 30280),
+                    url: URL(string: "https://audio.annoyo.test/cancel.m4s")!,
+                    headers: [:]
+                )
+            )
+        }
+        try await Task.sleep(for: .milliseconds(60))
+        task.cancel()
+
+        do {
+            try await task.value
+            check(false, "cancelled next-track prefetch reports cancellation")
+        } catch is CancellationError {
+            check(true, "cancelled next-track prefetch reports cancellation")
+        } catch {
+            check(false, "cancelled next-track prefetch reports cancellation: \(error)")
+        }
+        check(cache.summary().usedBytes == 0, "cancelled next-track prefetch does not write partial data")
+    }
+
+    private static func verifyControllerPrefetchesNextTrack() async throws {
+        let rootURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/controller-prefetch-\(UUID().uuidString)", isDirectory: true)
+        let fixtureURL = rootURL.appendingPathComponent("fixture.mp4")
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        try makeAudioFixture(at: fixtureURL)
+        MockAudioRangeURLProtocol.reset(payload: try Data(contentsOf: fixtureURL))
+
+        let serviceConfiguration = URLSessionConfiguration.ephemeral
+        serviceConfiguration.protocolClasses = [MockBilibiliURLProtocol.self]
+        serviceConfiguration.httpCookieStorage = HTTPCookieStorage.sharedCookieStorage(
+            forGroupContainerIdentifier: "io.annoyo.prefetch.\(UUID().uuidString)"
+        )
+        let audioConfiguration = URLSessionConfiguration.ephemeral
+        audioConfiguration.protocolClasses = [MockAudioRangeURLProtocol.self]
+        let controller = PlayerController(
+            service: BilibiliService(session: URLSession(configuration: serviceConfiguration)),
+            playbackQueue: PlaybackQueue(storageURL: rootURL.appendingPathComponent("queue.json")),
+            audioCache: AudioCache(
+                rootURL: rootURL.appendingPathComponent("cache", isDirectory: true),
+                sessionConfiguration: audioConfiguration
+            ),
+            restoresQueue: false,
+            savedPlaylists: SavedPlaylistStore(storageURL: rootURL.appendingPathComponent("playlists.json"))
+        )
+        controller.volume = 0
+        controller.createPlaylist()
+        let first = fixtureVideo(id: "BV1PREFETCHFIRST", title: "当前播放")
+        let next = fixtureVideo(id: "BV1PREFETCHNEXT", title: "下一首")
+        controller.enqueue(first)
+        controller.enqueue(next)
+        controller.playQueued(first)
+
+        let deadline = Date().addingTimeInterval(10)
+        let expectedRequest = "/BV1PREFETCHNEXT.m4a bytes=0-1048575"
+        while !MockAudioRangeURLProtocol.requestedResources.contains(expectedRequest), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        if !MockAudioRangeURLProtocol.requestedResources.contains(expectedRequest) {
+            let diagnostics = [
+                "state=\(controller.playbackState)",
+                "notice=\(controller.notice ?? "none")",
+                "resources=\(MockAudioRangeURLProtocol.requestedResources)",
+                "ranges=\(MockAudioRangeURLProtocol.requestedRanges)",
+            ].joined(separator: " ")
+            FileHandle.standardError.write(Data("PREFETCH ERROR: \(diagnostics)\n".utf8))
+        }
+        check(
+            MockAudioRangeURLProtocol.requestedResources.contains(expectedRequest),
+            "controller prefetches the deterministic next track"
+        )
+        check(
+            controller.playbackState.isPlaying,
+            "next-track prefetch waits until current playback is advancing"
+        )
+
+        let replacement = fixtureVideo(id: "BV1PREFETCHREPLACEMENT", title: "新的下一首")
+        controller.enqueue(replacement)
+        controller.playbackQueue.moveToTop(replacement)
+        let replacementRequest = "/BV1PREFETCHREPLACEMENT.m4a bytes=0-1048575"
+        let replacementDeadline = Date().addingTimeInterval(10)
+        while !MockAudioRangeURLProtocol.requestedResources.contains(replacementRequest),
+            Date() < replacementDeadline
+        {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        check(
+            MockAudioRangeURLProtocol.requestedResources.contains(replacementRequest),
+            "queue reorder switches prefetch to the new next track"
+        )
+        controller.pausePlayback()
+        withExtendedLifetime(controller) {}
+    }
+
+    private static func makeAudioFixture(at url: URL) throws {
+        let sampleRate = 44_100.0
+        let frameCount = AVAudioFrameCount(sampleRate * 5)
+        guard
+            let format = AVAudioFormat(
+                standardFormatWithSampleRate: sampleRate,
+                channels: 1
+            ),
+            let buffer = AVAudioPCMBuffer(
+                pcmFormat: format,
+                frameCapacity: frameCount
+            ),
+            let samples = buffer.floatChannelData?[0]
+        else { throw BilibiliError.noAudio }
+
+        buffer.frameLength = frameCount
+        for frame in 0..<Int(frameCount) {
+            let phase = 2 * Double.pi * 440 * Double(frame) / sampleRate
+            samples[frame] = Float(sin(phase) * 0.2)
+        }
+
+        let file = try AVAudioFile(
+            forWriting: url,
+            settings: format.settings
+        )
+        try file.write(from: buffer)
     }
 
     private static func temporaryQueueURL() -> URL {

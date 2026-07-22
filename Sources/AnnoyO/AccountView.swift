@@ -101,11 +101,12 @@ struct AccountView: View {
         self.previewAccount = previewAccount
         usesPreviewCacheSummary = previewCacheSummary != nil
         _cacheSummary = State(
-            initialValue: previewCacheSummary ?? AudioCacheSummary(
-                usedBytes: 0,
-                limitBytes: 2 * 1024 * 1024 * 1024,
-                itemCount: 0
-            )
+            initialValue: previewCacheSummary
+                ?? AudioCacheSummary(
+                    usedBytes: 0,
+                    limitBytes: 2 * 1024 * 1024 * 1024,
+                    itemCount: 0
+                )
         )
     }
 

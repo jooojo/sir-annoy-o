@@ -1,5 +1,5 @@
-import Accelerate
 import AVFoundation
+import Accelerate
 import AudioToolbox
 import Foundation
 import MediaToolbox
@@ -70,22 +70,28 @@ private struct AdaptiveBandEnvelope {
         }
 
         let envelopeTime = decibels > valueDecibels ? attack : release
-        valueDecibels += (decibels - valueDecibels) * smoothingBlend(
-            deltaTime: deltaTime,
-            timeConstant: envelopeTime
-        )
+        valueDecibels +=
+            (decibels - valueDecibels)
+            * smoothingBlend(
+                deltaTime: deltaTime,
+                timeConstant: envelopeTime
+            )
 
         let floorTime = valueDecibels < floorDecibels ? 0.08 : 8.0
-        floorDecibels += (valueDecibels - floorDecibels) * smoothingBlend(
-            deltaTime: deltaTime,
-            timeConstant: floorTime
-        )
+        floorDecibels +=
+            (valueDecibels - floorDecibels)
+            * smoothingBlend(
+                deltaTime: deltaTime,
+                timeConstant: floorTime
+            )
 
         let peakTime = valueDecibels > peakDecibels ? 0.05 : 3.0
-        peakDecibels += (valueDecibels - peakDecibels) * smoothingBlend(
-            deltaTime: deltaTime,
-            timeConstant: peakTime
-        )
+        peakDecibels +=
+            (valueDecibels - peakDecibels)
+            * smoothingBlend(
+                deltaTime: deltaTime,
+                timeConstant: peakTime
+            )
 
         floorDecibels = min(floorDecibels, peakDecibels - 18)
         let relative = clamp(
@@ -106,10 +112,12 @@ private struct SignalEnvelope {
         release: TimeInterval
     ) -> Double {
         let timeConstant = target > value ? attack : release
-        value += (target - value) * smoothingBlend(
-            deltaTime: deltaTime,
-            timeConstant: timeConstant
-        )
+        value +=
+            (target - value)
+            * smoothingBlend(
+                deltaTime: deltaTime,
+                timeConstant: timeConstant
+            )
         return value
     }
 }
@@ -130,9 +138,10 @@ private struct SpectralFluxPeakPicker {
 
         var onsetStrength = 0.0
         if previousFlux > previousPreviousFlux,
-           previousFlux >= flux,
-           previousFlux > previousThreshold,
-           secondsSinceOnset >= 0.10 {
+            previousFlux >= flux,
+            previousFlux > previousThreshold,
+            secondsSinceOnset >= 0.10
+        {
             onsetStrength = clamp(
                 (previousFlux - previousThreshold) / max(0.75, previousThreshold * 2)
             )
@@ -295,7 +304,7 @@ final class AudioFeatureExtractor {
     }
 
     private func analyzeFrame() {
-        for offset in 0 ..< Self.fftSize {
+        for offset in 0..<Self.fftSize {
             inputFrame[offset] = sampleRing[(writeIndex + offset) % Self.fftSize]
         }
         vDSP.multiply(inputFrame, window, result: &windowedFrame)
@@ -370,10 +379,11 @@ final class AudioFeatureExtractor {
 
         var onsetStrength = 0.0
         if hasPreviousSpectrum {
-            onsetStrength = peakPicker.ingest(
-                flux: spectralFlux,
-                deltaTime: deltaTime
-            ) * smoothStep((rmsDecibels + 76) / 24)
+            onsetStrength =
+                peakPicker.ingest(
+                    flux: spectralFlux,
+                    deltaTime: deltaTime
+                ) * smoothStep((rmsDecibels + 76) / 24)
         }
         swap(&previousLogSpectrum, &currentLogSpectrum)
         hasPreviousSpectrum = true
@@ -439,7 +449,7 @@ final class AudioFeatureExtractor {
         let safeUpper = min(upperFrequency, sampleRate * 0.49)
         guard count > 0, safeUpper > lowerFrequency else { return [] }
         let ratio = pow(safeUpper / lowerFrequency, 1 / Double(count))
-        return (0 ..< count).map { index in
+        return (0..<count).map { index in
             makeRange(
                 lowerFrequency: lowerFrequency * pow(ratio, Double(index)),
                 upperFrequency: lowerFrequency * pow(ratio, Double(index + 1)),
@@ -460,7 +470,7 @@ final class AudioFeatureExtractor {
             max(lower + 1, Int(ceil(upperFrequency / binWidth))),
             highestBin
         )
-        return lower ..< upper
+        return lower..<upper
     }
 }
 
@@ -597,7 +607,8 @@ private final class AudioSignalAccumulator: @unchecked Sendable {
                     sourceStartTime: sourceStartTime
                 )
             } else if flags & kAudioFormatFlagIsSignedInteger != 0,
-                      format.mBitsPerChannel == 16 {
+                format.mBitsPerChannel == 16
+            {
                 consumeInt16(
                     buffers,
                     frameCount: frameCount,
@@ -605,7 +616,8 @@ private final class AudioSignalAccumulator: @unchecked Sendable {
                     sourceStartTime: sourceStartTime
                 )
             } else if flags & kAudioFormatFlagIsSignedInteger != 0,
-                      format.mBitsPerChannel == 32 {
+                format.mBitsPerChannel == 32
+            {
                 consumeInt32(
                     buffers,
                     frameCount: frameCount,
@@ -622,7 +634,7 @@ private final class AudioSignalAccumulator: @unchecked Sendable {
         sampleRate: Double,
         sourceStartTime: TimeInterval?
     ) {
-        for frame in 0 ..< frameCount {
+        for frame in 0..<frameCount {
             var mono = 0.0 as Float
             var contributingChannels = 0
             for buffer in buffers {
@@ -631,7 +643,7 @@ private final class AudioSignalAccumulator: @unchecked Sendable {
                 let samples = data.assumingMemoryBound(to: Float.self)
                 let available = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size
                 let offset = frame * channels
-                for channel in 0 ..< channels where offset + channel < available {
+                for channel in 0..<channels where offset + channel < available {
                     mono += samples[offset + channel]
                     contributingChannels += 1
                 }
@@ -652,7 +664,7 @@ private final class AudioSignalAccumulator: @unchecked Sendable {
         sampleRate: Double,
         sourceStartTime: TimeInterval?
     ) {
-        for frame in 0 ..< frameCount {
+        for frame in 0..<frameCount {
             var mono = 0.0 as Float
             var contributingChannels = 0
             for buffer in buffers {
@@ -661,7 +673,7 @@ private final class AudioSignalAccumulator: @unchecked Sendable {
                 let samples = data.assumingMemoryBound(to: Int16.self)
                 let available = Int(buffer.mDataByteSize) / MemoryLayout<Int16>.size
                 let offset = frame * channels
-                for channel in 0 ..< channels where offset + channel < available {
+                for channel in 0..<channels where offset + channel < available {
                     mono += Float(samples[offset + channel]) / Float(Int16.max)
                     contributingChannels += 1
                 }
@@ -682,7 +694,7 @@ private final class AudioSignalAccumulator: @unchecked Sendable {
         sampleRate: Double,
         sourceStartTime: TimeInterval?
     ) {
-        for frame in 0 ..< frameCount {
+        for frame in 0..<frameCount {
             var mono = 0.0 as Float
             var contributingChannels = 0
             for buffer in buffers {
@@ -691,7 +703,7 @@ private final class AudioSignalAccumulator: @unchecked Sendable {
                 let samples = data.assumingMemoryBound(to: Int32.self)
                 let available = Int(buffer.mDataByteSize) / MemoryLayout<Int32>.size
                 let offset = frame * channels
-                for channel in 0 ..< channels where offset + channel < available {
+                for channel in 0..<channels where offset + channel < available {
                     mono += Float(samples[offset + channel]) / Float(Int32.max)
                     contributingChannels += 1
                 }

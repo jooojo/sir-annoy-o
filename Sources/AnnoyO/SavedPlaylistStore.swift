@@ -45,7 +45,8 @@ final class SavedPlaylistStore: ObservableObject {
 
     func update(_ playlistID: UUID, from queue: PlaybackQueue) {
         guard let index = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
-        let window = playlists[index].isRoaming
+        let window =
+            playlists[index].isRoaming
             ? RoamingPlaylist.normalized(items: queue.items, currentID: queue.currentID)
             : RoamingPlaylist.Window(items: queue.items, currentID: queue.currentID)
         playlists[index].items = window.items
@@ -63,12 +64,13 @@ final class SavedPlaylistStore: ObservableObject {
         resumePosition: TimeInterval
     ) {
         guard let index = playlists.firstIndex(where: { $0.id == playlistID }),
-              currentID == nil || playlists[index].items.contains(where: { $0.id == currentID })
+            currentID == nil || playlists[index].items.contains(where: { $0.id == currentID })
         else { return }
         if playlists[index].isRoaming {
             let window: RoamingPlaylist.Window
             if let currentID,
-               let video = playlists[index].items.first(where: { $0.id == currentID }) {
+                let video = playlists[index].items.first(where: { $0.id == currentID })
+            {
                 window = RoamingPlaylist.selecting(
                     video,
                     in: playlists[index].items,
@@ -117,8 +119,8 @@ final class SavedPlaylistStore: ObservableObject {
         guard !playlist.isRoaming else { return }
         let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty,
-              !playlists.contains(where: { $0.id != playlist.id && $0.name == name }),
-              let index = playlists.firstIndex(where: { $0.id == playlist.id })
+            !playlists.contains(where: { $0.id != playlist.id && $0.name == name }),
+            let index = playlists.firstIndex(where: { $0.id == playlist.id })
         else { return }
         playlists[index].name = name
         playlists[index].updatedAt = Date()
@@ -137,12 +139,12 @@ final class SavedPlaylistStore: ObservableObject {
         after currentID: String
     ) -> Bool {
         guard let index = playlists.firstIndex(where: \.isRoaming),
-              playlists[index].currentID == currentID,
-              RoamingPlaylist.next(
+            playlists[index].currentID == currentID,
+            RoamingPlaylist.next(
                 in: playlists[index].items,
                 currentID: currentID
-              ) == nil,
-              !playlists[index].items.contains(where: { $0.id == video.id })
+            ) == nil,
+            !playlists[index].items.contains(where: { $0.id == video.id })
         else { return false }
 
         let window = RoamingPlaylist.insertingNext(
@@ -212,7 +214,8 @@ final class SavedPlaylistStore: ObservableObject {
         let now = Date()
         var didChange = false
         var roaming = loadedPlaylists.first(where: \.isRoaming)
-        let userPlaylists = loadedPlaylists
+        let userPlaylists =
+            loadedPlaylists
             .filter { !$0.isRoaming }
             .sorted { $0.createdAt < $1.createdAt }
 
@@ -223,7 +226,8 @@ final class SavedPlaylistStore: ObservableObject {
             )
             if existing.name != RoamingPlaylist.name
                 || existing.items != window.items
-                || existing.currentID != window.currentID {
+                || existing.currentID != window.currentID
+            {
                 existing.name = RoamingPlaylist.name
                 existing.items = window.items
                 existing.currentID = window.currentID
@@ -250,7 +254,8 @@ final class SavedPlaylistStore: ObservableObject {
 
     private static var defaultStorageURL: URL {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return root
+        return
+            root
             .appendingPathComponent("AnnoyO", isDirectory: true)
             .appendingPathComponent("saved-playlists.json")
     }
@@ -269,9 +274,9 @@ final class SavedPlaylistStore: ObservableObject {
         guard name.hasPrefix(prefix) else { return nil }
         let suffix = name.dropFirst(prefix.count)
         guard !suffix.isEmpty,
-              suffix.allSatisfy(\.isNumber),
-              let index = Int(suffix),
-              index > 0
+            suffix.allSatisfy(\.isNumber),
+            let index = Int(suffix),
+            index > 0
         else { return nil }
         return index
     }

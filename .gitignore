@@ -3,3 +3,9 @@
 dist/
 Artifacts/
 .DS_Store
+
+.env
+.env.*
+!.env.example
+*.mobileprovision
+*.p12
