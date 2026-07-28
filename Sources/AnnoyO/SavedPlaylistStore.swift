@@ -6,7 +6,7 @@ struct SavedPlaylist: Identifiable, Codable, Equatable, Sendable {
     var name: String
     let createdAt: Date
     var updatedAt: Date
-    var items: [VideoSearchResult]
+    var items: [PlaybackItem]
     var currentID: String?
     var resumePartIndex: Int
     var resumePosition: TimeInterval
@@ -94,7 +94,7 @@ final class SavedPlaylistStore: ObservableObject {
     }
 
     private func createPlaylist(
-        items: [VideoSearchResult],
+        items: [PlaybackItem],
         currentID: String?,
         resumePartIndex: Int,
         resumePosition: TimeInterval
@@ -135,7 +135,7 @@ final class SavedPlaylistStore: ObservableObject {
 
     @discardableResult
     func insertRoamingNextIfMissing(
-        _ video: VideoSearchResult,
+        _ item: PlaybackItem,
         after currentID: String
     ) -> Bool {
         guard let index = playlists.firstIndex(where: \.isRoaming),
@@ -144,11 +144,11 @@ final class SavedPlaylistStore: ObservableObject {
                 in: playlists[index].items,
                 currentID: currentID
             ) == nil,
-            !playlists[index].items.contains(where: { $0.id == video.id })
+            !playlists[index].items.contains(where: { $0.id == item.id })
         else { return false }
 
         let window = RoamingPlaylist.insertingNext(
-            video,
+            item,
             in: playlists[index].items,
             currentID: currentID
         )
@@ -156,6 +156,64 @@ final class SavedPlaylistStore: ObservableObject {
         playlists[index].updatedAt = Date()
         persist()
         return true
+    }
+
+    @discardableResult
+    func insertRoamingNextIfMissing(
+        _ video: VideoSearchResult,
+        after currentID: String
+    ) -> Bool {
+        insertRoamingNextIfMissing(
+            PlaybackItem(video: video),
+            after: currentID
+        )
+    }
+
+    @discardableResult
+    func expand(
+        _ placeholder: PlaybackItem,
+        into expandedItems: [PlaybackItem],
+        selecting selectedID: String?,
+        in playlistID: UUID
+    ) -> PlaybackItem? {
+        guard let playlistIndex = playlists.firstIndex(where: { $0.id == playlistID }),
+            let placeholderIndex = playlists[playlistIndex].items.firstIndex(where: {
+                $0.id == placeholder.id
+            }),
+            !expandedItems.isEmpty
+        else { return nil }
+
+        let wasCurrent = playlists[playlistIndex].currentID == placeholder.id
+        let selected =
+            selectedID.flatMap { id in expandedItems.first(where: { $0.id == id }) }
+            ?? expandedItems.first!
+        var replacement = playlists[playlistIndex].items
+        replacement.remove(at: placeholderIndex)
+        replacement.insert(contentsOf: expandedItems, at: placeholderIndex)
+        var seenIDs = Set<String>()
+        replacement = replacement.filter { seenIDs.insert($0.id).inserted }
+
+        if playlists[playlistIndex].isRoaming {
+            let requestedCurrentID =
+                wasCurrent ? selected.id : playlists[playlistIndex].currentID
+            let window = RoamingPlaylist.normalized(
+                items: replacement,
+                currentID: requestedCurrentID
+            )
+            playlists[playlistIndex].items = window.items
+            playlists[playlistIndex].currentID = window.currentID
+        } else {
+            playlists[playlistIndex].items = replacement
+            if wasCurrent {
+                playlists[playlistIndex].currentID = selected.id
+            }
+        }
+        if wasCurrent {
+            playlists[playlistIndex].resumePartIndex = 0
+        }
+        playlists[playlistIndex].updatedAt = Date()
+        persist()
+        return playlists[playlistIndex].items.first(where: { $0.id == selected.id })
     }
 
     func replaceRoamingContents(from queue: PlaybackQueue) {

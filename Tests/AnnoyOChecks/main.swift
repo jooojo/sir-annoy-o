@@ -45,7 +45,10 @@ enum AnnoyOChecks {
         try await verifyAudioResourceLoaderSerializesOriginRequests()
         try await verifyAudioResourceLoaderRejectsEmptyResponses()
         try await verifyControllerPrefetchesNextTrack()
+        try await verifyStalePlayerItemEndDoesNotAdvancePlayback()
+        try await verifyMultipartQueueIsFlattened()
         verifyPlaybackQueuePersistence()
+        verifyMultipartItemOperationsAndLegacyMigration()
         verifyRoamingWindow()
         verifyRollerLoopLayout()
         verifySavedPlaylists()
@@ -242,7 +245,7 @@ enum AnnoyOChecks {
 
         queue.move(from: IndexSet(integer: 2), to: 1)
         check(queue.items.map(\.id) == [first.id, third.id, second.id], "queue reordering")
-        check(queue.advance() == third, "queue advances in persisted order")
+        check(queue.advance()?.video == third, "queue advances in persisted order")
 
         queue.moveToTop(second)
         check(queue.items.map(\.id) == [third.id, second.id, first.id], "queue item moves after current")
@@ -250,8 +253,80 @@ enum AnnoyOChecks {
 
         let restored = PlaybackQueue(storageURL: storageURL)
         check(restored.items.map(\.id) == queue.items.map(\.id), "queue persistence")
-        check(restored.current == third, "queue current item restoration")
+        check(restored.current?.video == third, "queue current item restoration")
         check(restored.resumePartIndex == 2 && restored.resumePosition == 42.5, "queue resume restoration")
+    }
+
+    private static func verifyMultipartItemOperationsAndLegacyMigration() {
+        let rootURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/item-model-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let queueURL = rootURL.appendingPathComponent("queue.json")
+        let video = fixtureVideo(id: "BV1ITEMMODEL", title: "分段节目")
+        let parts = [
+            VideoPart(cid: 301, number: 1, title: "开场", duration: 60),
+            VideoPart(cid: 302, number: 2, title: "正片", duration: 120),
+            VideoPart(cid: 303, number: 3, title: "尾声", duration: 90),
+        ]
+        let flattened = PlaybackItem.flatten(video: video, parts: parts)
+        let playlistID = UUID()
+        let queue = PlaybackQueue(storageURL: queueURL)
+        queue.replace(
+            items: flattened,
+            currentID: flattened[0].id,
+            resumePartIndex: 0,
+            resumePosition: 0,
+            savedPlaylistID: playlistID,
+            savedPlaylistName: "分段列表"
+        )
+        queue.move(from: IndexSet(integer: 2), to: 1)
+        check(
+            queue.items.map(\.part?.cid) == [301, 303, 302],
+            "one multipart item can be reordered independently"
+        )
+        queue.remove(flattened[1])
+        check(
+            queue.items.map(\.part?.cid) == [301, 303],
+            "one multipart item can be removed without removing sibling parts"
+        )
+        queue.select(flattened[2])
+        queue.updateResume(partIndex: 0, position: 12.5)
+
+        let restored = PlaybackQueue(storageURL: queueURL)
+        check(
+            restored.items.map(\.id) == queue.items.map(\.id)
+                && restored.current?.part?.cid == 303
+                && restored.resumePosition == 12.5,
+            "multipart item identity and resume position persist"
+        )
+        check(
+            restored.current?.title == "P3 · 尾声"
+                && restored.current?.webURL?.query == "p=3",
+            "multipart rows expose part-specific title and original-page link"
+        )
+
+        let legacyURL = rootURL.appendingPathComponent("legacy-queue.json")
+        let legacySnapshot = LegacyQueueSnapshot(
+            items: [video],
+            currentID: video.id,
+            resumePartIndex: 2,
+            resumePosition: 33,
+            savedPlaylistID: playlistID,
+            savedPlaylistName: "旧列表",
+            playbackSourcePlaylistID: playlistID
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try? FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        try? encoder.encode(legacySnapshot).write(to: legacyURL, options: .atomic)
+        let migrated = PlaybackQueue(storageURL: legacyURL)
+        check(
+            migrated.items.count == 1
+                && migrated.current?.video == video
+                && migrated.current?.part == nil
+                && migrated.resumePartIndex == 2,
+            "legacy video-level queue JSON remains readable before lazy part expansion"
+        )
     }
 
     private static func verifySavedPlaylists() {
@@ -279,7 +354,10 @@ enum AnnoyOChecks {
         queue.playNow(first)
         queue.enqueue(second)
         queue.updateResume(partIndex: 1, position: 38.5)
-        check(store.roamingPlaylist.items == [first, second], "roaming mutations persist immediately")
+        check(
+            store.roamingPlaylist.items.map(\.video) == [first, second],
+            "roaming mutations persist immediately"
+        )
 
         controller.renameSavedPlaylist(roaming, to: "不能改名")
         controller.deleteSavedPlaylist(roaming)
@@ -364,20 +442,26 @@ enum AnnoyOChecks {
             queue.insertRoamingNextIfMissing(recommended, after: current.id),
             "Bilibili top recommendation fills an empty next slot"
         )
-        check(queue.items == [previous, current, recommended], "roaming keeps previous, current and next")
+        check(
+            queue.items.map(\.video) == [previous, current, recommended],
+            "roaming keeps previous, current and next"
+        )
 
         queue.enqueue(searched)
         check(
-            queue.items == [previous, current, searched],
+            queue.items.map(\.video) == [previous, current, searched],
             "search insertion replaces the existing roaming next item"
         )
         queue.select(searched)
-        check(queue.items == [current, searched], "advancing rotates the roaming window")
+        check(queue.items.map(\.video) == [current, searched], "advancing rotates the roaming window")
         check(
             queue.insertRoamingNextIfMissing(later, after: searched.id),
             "new current receives a fresh recommendation"
         )
-        check(queue.items == [current, searched, later], "roaming window never grows beyond three items")
+        check(
+            queue.items.map(\.video) == [current, searched, later],
+            "roaming window never grows beyond three items"
+        )
         check(
             !queue.insertRoamingNextIfMissing(recommended, after: searched.id),
             "automatic recommendation never replaces a populated next slot"
@@ -385,7 +469,7 @@ enum AnnoyOChecks {
 
         queue.select(current)
         check(
-            queue.items == [searched, current],
+            queue.items.map(\.video) == [searched, current],
             "playing any different roaming item records the old current as playback history"
         )
         check(
@@ -397,7 +481,7 @@ enum AnnoyOChecks {
             "roaming previous item can replace the next slot"
         )
         check(
-            queue.items == [current, searched],
+            queue.items.map(\.video) == [current, searched],
             "moving roaming previous to next keeps the window unique"
         )
     }
@@ -561,7 +645,7 @@ enum AnnoyOChecks {
         check(controller.returnToPlayingPlaylist(), "return-to-current finds the playback source playlist")
         check(queue.savedPlaylistID == sourcePlaylistID, "return-to-current switches back to the playback list")
         check(controller.playlistTransitionDirection == -1, "return-to-current preserves list slide direction")
-        check(queue.current == first, "return-to-current restores the currently playing row")
+        check(queue.current?.video == first, "return-to-current restores the currently playing row")
 
         controller.switchPlaylist(by: 1)
         check(queue.savedPlaylistID == newPlaylistID, "playlist navigation changes the displayed playlist")
@@ -778,7 +862,10 @@ enum AnnoyOChecks {
         controller.playQueued(first)
         controller.removeFromQueue(first)
         check(controller.currentVideo == second, "removing current advances to the next queue item")
-        check(queue.items == [second] && queue.current == second, "removing current keeps queue state consistent")
+        check(
+            queue.items.map(\.video) == [second] && queue.current?.video == second,
+            "removing current keeps queue state consistent"
+        )
 
         controller.removeFromQueue(second)
         check(controller.currentVideo == nil, "removing final current clears player")
@@ -801,7 +888,9 @@ enum AnnoyOChecks {
 
         controller.play(source)
         try await waitUntil {
-            RoamingPlaylist.next(in: queue.items, currentID: source.id)?.id == "BV1RELATEDTOP"
+            guard let currentID = queue.currentID else { return false }
+            return RoamingPlaylist.next(in: queue.items, currentID: currentID)?.video.id
+                == "BV1RELATEDTOP"
         }
         check(
             queue.savedPlaylistID == RoamingPlaylist.id,
@@ -809,33 +898,41 @@ enum AnnoyOChecks {
         )
         controller.replaceRoamingNextRecommendation()
         check(
-            RoamingPlaylist.next(in: queue.items, currentID: source.id)?.id == "BV1RELATEDSECOND",
+            queue.currentID.flatMap {
+                RoamingPlaylist.next(in: queue.items, currentID: $0)
+            }?.video.id == "BV1RELATEDSECOND",
             "roaming next cycles forward in the recommendation list"
         )
         controller.enqueue(searched)
         check(
-            RoamingPlaylist.next(in: queue.items, currentID: source.id) == searched,
+            queue.currentID.flatMap {
+                RoamingPlaylist.next(in: queue.items, currentID: $0)
+            }?.video == searched,
             "search insertion overrides an automatic recommendation"
         )
 
         controller.play(searched)
         check(
             controller.currentVideo == searched
-                && Array(queue.items.prefix(2)) == [source, searched],
+                && queue.items.prefix(2).map(\.video) == [source, searched],
             "selecting a search result replaces current playback immediately"
         )
         try await waitUntil {
-            RoamingPlaylist.next(in: queue.items, currentID: searched.id)?.id == "BV1RELATEDTOP"
+            guard let currentID = queue.currentID else { return false }
+            return RoamingPlaylist.next(in: queue.items, currentID: currentID)?.video.id
+                == "BV1RELATEDTOP"
         }
         check(queue.items.count == 3, "new roaming playback immediately refreshes its next item")
         controller.replaceRoamingNextRecommendation()
         check(
-            RoamingPlaylist.next(in: queue.items, currentID: searched.id)?.id == "BV1RELATEDSECOND",
+            queue.currentID.flatMap {
+                RoamingPlaylist.next(in: queue.items, currentID: $0)
+            }?.video.id == "BV1RELATEDSECOND",
             "new roaming playback owns a fresh recommendation cursor"
         )
         controller.replaceRoamingNext(with: source)
         check(
-            queue.items == [searched, source],
+            queue.items.map(\.video) == [searched, source],
             "roaming previous action replaces next without leaving a delete-only history row"
         )
     }
@@ -1137,6 +1234,86 @@ enum AnnoyOChecks {
         withExtendedLifetime(controller) {}
     }
 
+    private static func verifyStalePlayerItemEndDoesNotAdvancePlayback() async throws {
+        let rootURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/stale-end-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+
+        let serviceConfiguration = URLSessionConfiguration.ephemeral
+        serviceConfiguration.protocolClasses = [MockBilibiliURLProtocol.self]
+        serviceConfiguration.httpCookieStorage = HTTPCookieStorage.sharedCookieStorage(
+            forGroupContainerIdentifier: "io.annoyo.stale-end.\(UUID().uuidString)"
+        )
+        let controller = PlayerController(
+            service: BilibiliService(session: URLSession(configuration: serviceConfiguration)),
+            playbackQueue: PlaybackQueue(storageURL: rootURL.appendingPathComponent("queue.json")),
+            audioCache: AudioCache(rootURL: rootURL.appendingPathComponent("cache", isDirectory: true)),
+            restoresQueue: false,
+            savedPlaylists: SavedPlaylistStore(storageURL: rootURL.appendingPathComponent("playlists.json"))
+        )
+        controller.createPlaylist()
+        let first = fixtureVideo(id: "BV1STALEFIRST", title: "当前音频")
+        let second = fixtureVideo(id: "BV1STALESECOND", title: "下一条音频")
+        controller.enqueue(first)
+        controller.enqueue(second)
+        controller.playQueued(first)
+
+        let manifestDeadline = Date().addingTimeInterval(3)
+        while controller.totalParts == 0, Date() < manifestDeadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        check(controller.currentVideo == first, "stale-end fixture starts on the requested audio")
+
+        let staleItem = AVPlayerItem(
+            url: URL(fileURLWithPath: "/tmp/annoyo-stale-player-item.m4a")
+        )
+        NotificationCenter.default.post(
+            name: .AVPlayerItemDidPlayToEndTime,
+            object: staleItem
+        )
+        try await Task.sleep(for: .milliseconds(100))
+        check(
+            controller.currentVideo == first,
+            "an old player item's delayed end event cannot truncate the newly loaded audio"
+        )
+        withExtendedLifetime(controller) {}
+    }
+
+    private static func verifyMultipartQueueIsFlattened() async throws {
+        let rootURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/multipart-queue-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let serviceConfiguration = URLSessionConfiguration.ephemeral
+        serviceConfiguration.protocolClasses = [MockBilibiliURLProtocol.self]
+        serviceConfiguration.httpCookieStorage = HTTPCookieStorage.sharedCookieStorage(
+            forGroupContainerIdentifier: "io.annoyo.multipart.\(UUID().uuidString)"
+        )
+        let controller = PlayerController(
+            service: BilibiliService(session: URLSession(configuration: serviceConfiguration)),
+            playbackQueue: PlaybackQueue(storageURL: rootURL.appendingPathComponent("queue.json")),
+            audioCache: AudioCache(rootURL: rootURL.appendingPathComponent("cache", isDirectory: true)),
+            restoresQueue: false,
+            savedPlaylists: SavedPlaylistStore(storageURL: rootURL.appendingPathComponent("playlists.json"))
+        )
+        controller.createPlaylist()
+        let multipart = fixtureVideo(id: "BV1MULTIPART", title: "三段节目")
+        controller.play(multipart)
+
+        let manifestDeadline = Date().addingTimeInterval(3)
+        while controller.totalParts != 3, Date() < manifestDeadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        check(controller.totalParts == 3, "multipart fixture resolves all parts")
+        check(
+            controller.playbackQueue.items.count == 3
+                && Set(controller.playbackQueue.items.map(\.id)).count == 3,
+            "multipart parts are flattened into independently addressable queue items"
+        )
+        withExtendedLifetime(controller) {}
+    }
+
     private static func makeAudioFixture(at url: URL) throws {
         let sampleRate = 44_100.0
         let frameCount = AVAudioFrameCount(sampleRate * 5)
@@ -1181,4 +1358,14 @@ enum AnnoyOChecks {
             .appendingPathComponent(".build/playlists-check-\(UUID().uuidString).json")
         return SavedPlaylistStore(storageURL: storageURL)
     }
+}
+
+private struct LegacyQueueSnapshot: Codable {
+    let items: [VideoSearchResult]
+    let currentID: String?
+    let resumePartIndex: Int
+    let resumePosition: TimeInterval
+    let savedPlaylistID: UUID?
+    let savedPlaylistName: String?
+    let playbackSourcePlaylistID: UUID?
 }

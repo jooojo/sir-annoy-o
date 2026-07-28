@@ -1,6 +1,6 @@
 # 发布流程
 
-发布版本以 `Packaging/Info.plist` 中的 `CFBundleShortVersionString` 为准。tag 必须严格使用对应的 `v<version>`，例如版本 `0.1.0` 对应 `v0.1.0`。
+发布版本以 `Packaging/Info.plist` 中的 `CFBundleShortVersionString` 为准。tag 必须严格使用对应的 `v<version>`，例如版本 `0.1.1` 对应 `v0.1.1`。
 
 ## 发布前演练
 
@@ -13,8 +13,8 @@
 ## 正式发布
 
 ```bash
-git tag -a v0.1.0 -m "AnnoyO 0.1.0"
-git push origin v0.1.0
+git tag -a v0.1.1 -m "AnnoyO 0.1.1"
+git push origin v0.1.1
 ```
 
 tag push 会重新运行离线检查、构建 `AnnoyO.app`、验证签名和压缩包，并创建带有应用压缩包及 SHA-256 文件的 GitHub Release。tag 与应用版本不一致时，workflow 会直接失败。

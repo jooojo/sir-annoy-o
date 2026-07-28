@@ -3,7 +3,7 @@ import Foundation
 
 @MainActor
 final class PlaybackQueue: ObservableObject {
-    @Published private(set) var items: [VideoSearchResult]
+    @Published private(set) var items: [PlaybackItem]
     @Published private(set) var currentID: String? {
         didSet {
             if !suppressesCurrentSelectionChanged,
@@ -58,7 +58,7 @@ final class PlaybackQueue: ObservableObject {
         savedPlaylistID == RoamingPlaylist.id
     }
 
-    var current: VideoSearchResult? {
+    var current: PlaybackItem? {
         guard let currentID else { return nil }
         return items.first { $0.id == currentID }
     }
@@ -77,14 +77,18 @@ final class PlaybackQueue: ObservableObject {
         return items.indices.contains(index - 1)
     }
 
-    func contains(_ video: VideoSearchResult) -> Bool {
-        items.contains { $0.id == video.id }
+    func contains(_ item: PlaybackItem) -> Bool {
+        items.contains { $0.id == item.id }
     }
 
-    func playNow(_ video: VideoSearchResult) {
+    func contains(_ video: VideoSearchResult) -> Bool {
+        items.contains { $0.video.id == video.id }
+    }
+
+    func playNow(_ item: PlaybackItem) {
         if isRoaming {
             let window = RoamingPlaylist.selecting(
-                video,
+                item,
                 in: items,
                 currentID: currentID
             )
@@ -96,28 +100,32 @@ final class PlaybackQueue: ObservableObject {
             return
         }
 
-        if !contains(video) {
+        if !contains(item) {
             let insertionIndex: Int
             if let currentID, let index = items.firstIndex(where: { $0.id == currentID }) {
                 insertionIndex = index + 1
             } else {
                 insertionIndex = items.endIndex
             }
-            items.insert(video, at: insertionIndex)
+            items.insert(item, at: insertionIndex)
         }
-        currentID = video.id
+        currentID = item.id
         resumePartIndex = 0
         resumePosition = 0
         persist()
     }
 
-    func enqueue(_ video: VideoSearchResult) {
+    func playNow(_ video: VideoSearchResult) {
+        playNow(PlaybackItem(video: video))
+    }
+
+    func enqueue(_ item: PlaybackItem) {
         if isRoaming {
             if currentID != nil {
-                _ = replaceRoamingNext(with: video)
+                _ = replaceRoamingNext(with: item)
             } else {
                 let window = RoamingPlaylist.insertingNext(
-                    video,
+                    item,
                     in: items,
                     currentID: nil
                 )
@@ -128,16 +136,20 @@ final class PlaybackQueue: ObservableObject {
             return
         }
 
-        guard !contains(video) else { return }
-        items.append(video)
+        guard !contains(item) else { return }
+        items.append(item)
         persist()
     }
 
-    func select(_ video: VideoSearchResult) {
-        guard contains(video) else { return }
+    func enqueue(_ video: VideoSearchResult) {
+        enqueue(PlaybackItem(video: video))
+    }
+
+    func select(_ item: PlaybackItem) {
+        guard contains(item) else { return }
         if isRoaming {
             let window = RoamingPlaylist.selecting(
-                video,
+                item,
                 in: items,
                 currentID: currentID
             )
@@ -148,15 +160,20 @@ final class PlaybackQueue: ObservableObject {
             persist()
             return
         }
-        currentID = video.id
+        currentID = item.id
         resumePartIndex = 0
         resumePosition = 0
         persist()
     }
 
+    func select(_ video: VideoSearchResult) {
+        guard let item = items.first(where: { $0.video.id == video.id }) else { return }
+        select(item)
+    }
+
     @discardableResult
-    func advance() -> VideoSearchResult? {
-        let next: VideoSearchResult?
+    func advance() -> PlaybackItem? {
+        let next: PlaybackItem?
         if let currentID, let index = items.firstIndex(where: { $0.id == currentID }) {
             next = items.indices.contains(index + 1) ? items[index + 1] : nil
         } else {
@@ -168,7 +185,7 @@ final class PlaybackQueue: ObservableObject {
     }
 
     @discardableResult
-    func retreat() -> VideoSearchResult? {
+    func retreat() -> PlaybackItem? {
         guard let currentID,
             let index = items.firstIndex(where: { $0.id == currentID }),
             items.indices.contains(index - 1)
@@ -178,15 +195,22 @@ final class PlaybackQueue: ObservableObject {
         return previous
     }
 
-    func remove(_ video: VideoSearchResult) {
-        guard contains(video) else { return }
-        items.removeAll { $0.id == video.id }
-        if currentID == video.id {
+    func remove(_ item: PlaybackItem) {
+        guard contains(item) else { return }
+        items.removeAll { $0.id == item.id }
+        if currentID == item.id {
             currentID = nil
             resumePartIndex = 0
             resumePosition = 0
         }
         persist()
+    }
+
+    func remove(_ video: VideoSearchResult) {
+        let matchingItems = items.filter { $0.video.id == video.id }
+        for item in matchingItems {
+            remove(item)
+        }
     }
 
     func move(from source: IndexSet, to destination: Int) {
@@ -206,22 +230,27 @@ final class PlaybackQueue: ObservableObject {
         persist()
     }
 
-    func moveToTop(_ video: VideoSearchResult) {
+    func moveToTop(_ item: PlaybackItem) {
         if isRoaming {
-            enqueue(video)
+            enqueue(item)
             return
         }
-        guard video.id != currentID,
-            items.contains(where: { $0.id == video.id })
+        guard item.id != currentID,
+            items.contains(where: { $0.id == item.id })
         else { return }
 
-        let remaining = items.filter { $0.id != video.id && $0.id != currentID }
+        let remaining = items.filter { $0.id != item.id && $0.id != currentID }
         if let current = items.first(where: { $0.id == currentID }) {
-            items = [current, video] + remaining
+            items = [current, item] + remaining
         } else {
-            items = [video] + remaining
+            items = [item] + remaining
         }
         persist()
+    }
+
+    func moveToTop(_ video: VideoSearchResult) {
+        guard let item = items.first(where: { $0.video.id == video.id }) else { return }
+        moveToTop(item)
     }
 
     func clear() {
@@ -233,7 +262,7 @@ final class PlaybackQueue: ObservableObject {
     }
 
     func replace(
-        items newItems: [VideoSearchResult],
+        items newItems: [PlaybackItem],
         currentID requestedCurrentID: String?,
         resumePartIndex newPartIndex: Int,
         resumePosition newPosition: TimeInterval,
@@ -264,19 +293,37 @@ final class PlaybackQueue: ObservableObject {
         persist()
     }
 
+    func replace(
+        items newItems: [VideoSearchResult],
+        currentID requestedCurrentID: String?,
+        resumePartIndex newPartIndex: Int,
+        resumePosition newPosition: TimeInterval,
+        savedPlaylistID newSavedPlaylistID: UUID? = nil,
+        savedPlaylistName newSavedPlaylistName: String? = nil
+    ) {
+        replace(
+            items: newItems.map { PlaybackItem(video: $0) },
+            currentID: requestedCurrentID,
+            resumePartIndex: newPartIndex,
+            resumePosition: newPosition,
+            savedPlaylistID: newSavedPlaylistID,
+            savedPlaylistName: newSavedPlaylistName
+        )
+    }
+
     @discardableResult
     func insertRoamingNextIfMissing(
-        _ video: VideoSearchResult,
+        _ item: PlaybackItem,
         after expectedCurrentID: String
     ) -> Bool {
         guard isRoaming,
             currentID == expectedCurrentID,
             RoamingPlaylist.next(in: items, currentID: currentID) == nil,
-            !contains(video)
+            !contains(item)
         else { return false }
 
         let window = RoamingPlaylist.insertingNext(
-            video,
+            item,
             in: items,
             currentID: currentID
         )
@@ -286,14 +333,25 @@ final class PlaybackQueue: ObservableObject {
     }
 
     @discardableResult
-    func replaceRoamingNext(with video: VideoSearchResult) -> Bool {
+    func insertRoamingNextIfMissing(
+        _ video: VideoSearchResult,
+        after expectedCurrentID: String
+    ) -> Bool {
+        insertRoamingNextIfMissing(
+            PlaybackItem(video: video),
+            after: expectedCurrentID
+        )
+    }
+
+    @discardableResult
+    func replaceRoamingNext(with item: PlaybackItem) -> Bool {
         guard isRoaming,
             let currentID,
-            video.id != currentID
+            item.id != currentID
         else { return false }
 
         let window = RoamingPlaylist.insertingNext(
-            video,
+            item,
             in: items,
             currentID: currentID
         )
@@ -304,6 +362,52 @@ final class PlaybackQueue: ObservableObject {
         self.currentID = window.currentID
         persist()
         return true
+    }
+
+    @discardableResult
+    func replaceRoamingNext(with video: VideoSearchResult) -> Bool {
+        replaceRoamingNext(with: PlaybackItem(video: video))
+    }
+
+    @discardableResult
+    func expand(
+        _ placeholder: PlaybackItem,
+        into expandedItems: [PlaybackItem],
+        selecting selectedID: String?
+    ) -> PlaybackItem? {
+        guard let placeholderIndex = items.firstIndex(where: { $0.id == placeholder.id }),
+            !expandedItems.isEmpty
+        else { return nil }
+
+        let wasCurrent = currentID == placeholder.id
+        let selected =
+            selectedID.flatMap { id in expandedItems.first(where: { $0.id == id }) }
+            ?? expandedItems.first!
+        var replacement = items
+        replacement.remove(at: placeholderIndex)
+        replacement.insert(contentsOf: expandedItems, at: placeholderIndex)
+        var seenIDs = Set<String>()
+        replacement = replacement.filter { seenIDs.insert($0.id).inserted }
+
+        if isRoaming {
+            let requestedCurrentID = wasCurrent ? selected.id : currentID
+            let window = RoamingPlaylist.normalized(
+                items: replacement,
+                currentID: requestedCurrentID
+            )
+            items = window.items
+            currentID = window.currentID
+        } else {
+            items = replacement
+            if wasCurrent {
+                currentID = selected.id
+            }
+        }
+        if wasCurrent {
+            resumePartIndex = 0
+        }
+        persist()
+        return items.first(where: { $0.id == selected.id })
     }
 
     func markSaved(as playlist: SavedPlaylist) {
@@ -374,7 +478,7 @@ final class PlaybackQueue: ObservableObject {
 }
 
 private struct Snapshot: Codable {
-    let items: [VideoSearchResult]
+    let items: [PlaybackItem]
     let currentID: String?
     let resumePartIndex: Int
     let resumePosition: TimeInterval

@@ -604,18 +604,18 @@ struct MenuBarView: View {
         "search-\(videoID)"
     }
 
-    private var displayedCurrentVideo: VideoSearchResult? {
-        if let currentVideo = controller.currentVideo {
-            return controller.isDisplayingPlayingPlaylist ? currentVideo : nil
+    private var displayedCurrentVideo: PlaybackItem? {
+        if let currentItem = controller.currentItem {
+            return controller.isDisplayingPlayingPlaylist ? currentItem : nil
         }
         return controller.playbackQueue.current
     }
 
-    private var rollerAnchorVideo: VideoSearchResult? {
+    private var rollerAnchorVideo: PlaybackItem? {
         displayedCurrentVideo ?? controller.playbackQueue.current
     }
 
-    private func queueItemRole(for video: VideoSearchResult) -> RollerQueueItemRole {
+    private func queueItemRole(for video: PlaybackItem) -> RollerQueueItemRole {
         guard controller.playbackQueue.isRoaming,
             let currentID = controller.playbackQueue.currentID,
             let currentIndex = controller.playbackQueue.items.firstIndex(where: {
@@ -746,7 +746,7 @@ struct MenuBarView: View {
 
     private func returnToPlayingAndAnimate(using proxy: ScrollViewProxy) {
         let switchesPlaylist = !controller.isDisplayingPlayingPlaylist
-        guard let currentVideoID = controller.currentVideo?.id,
+        guard let currentVideoID = controller.currentItem?.id,
             controller.returnToPlayingPlaylist()
         else { return }
         let delay = switchesPlaylist ? 0.32 : 0
@@ -805,7 +805,7 @@ private struct RollerLoopItem: Identifiable {
     let id: String
     let cycle: Int
     let logicalIndex: Int
-    let video: VideoSearchResult
+    let video: PlaybackItem
 }
 
 private enum RollerQueueItemRole: Equatable {
@@ -1128,7 +1128,7 @@ private struct AnimatedPlaybackPattern: View {
 
 private struct RollerQueueRow: View {
     let index: Int
-    let video: VideoSearchResult
+    let video: PlaybackItem
     let isCurrent: Bool
     let playbackState: PlaybackState
     let elapsed: TimeInterval
@@ -1240,7 +1240,7 @@ private struct RollerQueueRow: View {
             .contentShape(Rectangle())
             .simultaneousGesture(scrubGesture(width: geometry.size.width))
             .help(
-                role == .regular
+                role == .regular || role == .roamingCurrent
                     ? "长按后左右拖动以调整播放位置"
                     : (playbackState.showsPauseControl ? "暂停" : "播放")
             )
@@ -1266,7 +1266,7 @@ private struct RollerQueueRow: View {
     }
 
     private var canScrub: Bool {
-        guard role == .regular else { return false }
+        guard role == .regular || role == .roamingCurrent else { return false }
         guard duration.isFinite, duration > 0 else { return false }
         return switch playbackState {
         case .playing, .paused, .buffering:

@@ -8,7 +8,7 @@ final class PlayerController: ObservableObject {
     @Published private(set) var searchResults: [VideoSearchResult] = []
     @Published private(set) var hasMoreSearchResults = false
     @Published private(set) var searchPaginationError: String?
-    @Published private(set) var currentVideo: VideoSearchResult?
+    @Published private(set) var currentItem: PlaybackItem?
     @Published private(set) var playbackState: PlaybackState = .idle
     @Published private(set) var isSearching = false
     @Published private(set) var elapsed: TimeInterval = 0
@@ -28,6 +28,8 @@ final class PlayerController: ObservableObject {
     let audioLevel = AudioReactiveLevel()
     let savedPlaylists: SavedPlaylistStore
 
+    var currentVideo: VideoSearchResult? { currentItem?.video }
+
     private let service: BilibiliService
     private let audioCache: AudioCache
     private let player = AVPlayer()
@@ -36,6 +38,7 @@ final class PlayerController: ObservableObject {
     private var currentPartIndex = 0
     private var currentItemStatusObservation: NSKeyValueObservation?
     private var currentItemGeneration = UUID()
+    private var activeLoadID = UUID()
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var loadTask: Task<Void, Never>?
@@ -236,62 +239,85 @@ final class PlayerController: ObservableObject {
     }
 
     func play(_ video: VideoSearchResult) {
-        playbackQueue.playNow(video)
+        let item =
+            playbackQueue.items.first(where: { $0.video.id == video.id })
+            ?? PlaybackItem(video: video)
+        playbackQueue.playNow(item)
         setPlayingPlaylistID(playbackQueue.savedPlaylistID)
-        resetShuffleOrder(startingAt: video)
-        load(video, partIndex: 0, knownParts: nil, autoplay: true)
+        resetShuffleOrder(startingAt: item)
+        load(item, partIndex: 0, knownParts: nil, autoplay: true)
     }
 
     func enqueue(_ video: VideoSearchResult) {
-        playbackQueue.enqueue(video)
+        guard !playbackQueue.contains(video) else {
+            notice = "已在当前列表"
+            return
+        }
+        let item = PlaybackItem(video: video)
+        playbackQueue.enqueue(item)
+        resolveQueuedItemIfNeeded(item)
         notice = playbackQueue.isRoaming ? "已设为漫游下一首" : "已加入播放队列"
     }
 
     func replaceRoamingNext(with video: VideoSearchResult) {
-        guard playbackQueue.replaceRoamingNext(with: video) else { return }
+        replaceRoamingNext(with: PlaybackItem(video: video))
+    }
+
+    func replaceRoamingNext(with item: PlaybackItem) {
+        guard playbackQueue.replaceRoamingNext(with: item) else { return }
+        resolveQueuedItemIfNeeded(item)
         roamingRecommendationCursor =
             roamingRecommendations.firstIndex(where: {
-                $0.id == video.id
+                $0.id == item.video.id
             }) ?? -1
         notice = "已替换漫游下一首"
     }
 
     func replaceRoamingNextRecommendation() {
         guard playbackQueue.isRoaming,
-            let currentID = playbackQueue.currentID,
-            currentID == roamingRecommendationSourceID
+            let currentItem = playbackQueue.current,
+            currentItem.video.id == roamingRecommendationSourceID
         else {
-            pendingRoamingRecommendationReplacementSourceID = playbackQueue.currentID
-            requestRoamingRecommendationIfNeeded(for: playbackQueue.current)
+            pendingRoamingRecommendationReplacementSourceID = playbackQueue.current?.video.id
+            requestRoamingRecommendationIfNeeded(for: playbackQueue.current?.video)
             return
         }
 
-        let excludedIDs = Set(playbackQueue.items.map(\.id))
+        let excludedIDs = Set(playbackQueue.items.map(\.video.id))
         guard let candidate = nextRoamingRecommendation(excluding: excludedIDs),
-            playbackQueue.replaceRoamingNext(with: candidate.video)
+            playbackQueue.replaceRoamingNext(with: PlaybackItem(video: candidate.video))
         else { return }
+        resolveQueuedItemIfNeeded(PlaybackItem(video: candidate.video))
 
         roamingRecommendationCursor = candidate.index
         notice = "已换一首推荐"
     }
 
-    func playQueued(_ video: VideoSearchResult) {
-        playbackQueue.select(video)
+    func playQueued(_ item: PlaybackItem) {
+        playbackQueue.select(item)
         setPlayingPlaylistID(playbackQueue.savedPlaylistID)
-        resetShuffleOrder(startingAt: video)
-        load(video, partIndex: 0, knownParts: nil, autoplay: true)
+        resetShuffleOrder(startingAt: item)
+        load(item, partIndex: 0, knownParts: nil, autoplay: true)
     }
 
-    func removeFromQueue(_ video: VideoSearchResult) {
-        guard isDisplayingPlayingPlaylist, currentVideo?.id == video.id else {
-            playbackQueue.remove(video)
+    func playQueued(_ video: VideoSearchResult) {
+        if let item = playbackQueue.items.first(where: { $0.video.id == video.id }) {
+            playQueued(item)
+        } else {
+            play(video)
+        }
+    }
+
+    func removeFromQueue(_ item: PlaybackItem) {
+        guard isDisplayingPlayingPlaylist, currentItem?.id == item.id else {
+            playbackQueue.remove(item)
             requestRoamingRecommendationIfNeeded()
             return
         }
 
         let items = playbackQueue.items
-        let currentIndex = items.firstIndex(where: { $0.id == video.id })
-        let replacement: VideoSearchResult?
+        let currentIndex = items.firstIndex(where: { $0.id == item.id })
+        let replacement: PlaybackItem?
         if let currentIndex, items.indices.contains(currentIndex + 1) {
             replacement = items[currentIndex + 1]
         } else if let currentIndex, items.indices.contains(currentIndex - 1) {
@@ -301,7 +327,7 @@ final class PlayerController: ObservableObject {
         }
         let shouldAutoplay = playbackIntent || playbackState.isPlaying
 
-        playbackQueue.remove(video)
+        playbackQueue.remove(item)
         if let replacement {
             playbackQueue.select(replacement)
             resetShuffleOrder(startingAt: replacement)
@@ -309,6 +335,13 @@ final class PlayerController: ObservableObject {
         } else {
             stopPlaybackAndClearCurrent()
         }
+    }
+
+    func removeFromQueue(_ video: VideoSearchResult) {
+        guard let item = playbackQueue.items.first(where: { $0.video.id == video.id }) else {
+            return
+        }
+        removeFromQueue(item)
     }
 
     func cacheSummary() -> AudioCacheSummary {
@@ -377,13 +410,13 @@ final class PlayerController: ObservableObject {
     }
 
     var isDisplayingPlayingPlaylist: Bool {
-        currentVideo != nil
+        currentItem != nil
             && playingPlaylistID != nil
             && playbackQueue.savedPlaylistID == playingPlaylistID
     }
 
     var canReturnToPlayingPlaylist: Bool {
-        guard currentVideo != nil, let playingPlaylistID else { return false }
+        guard currentItem != nil, let playingPlaylistID else { return false }
         return savedPlaylists.playlists.contains(where: { $0.id == playingPlaylistID })
     }
 
@@ -408,8 +441,8 @@ final class PlayerController: ObservableObject {
         case .shuffle:
             playbackOrderMode = .repeatAll
         }
-        if playbackOrderMode == .shuffle, let currentVideo {
-            resetShuffleOrder(startingAt: currentVideo)
+        if playbackOrderMode == .shuffle, let currentItem {
+            resetShuffleOrder(startingAt: currentItem)
         } else {
             clearShuffleOrder()
         }
@@ -430,11 +463,11 @@ final class PlayerController: ObservableObject {
     }
 
     func playNext() {
-        guard let currentVideo else { return }
+        guard let currentItem else { return }
         if currentParts.indices.contains(currentPartIndex + 1) {
             updatePlayingResume(partIndex: currentPartIndex + 1, position: 0)
             load(
-                currentVideo,
+                currentItem,
                 partIndex: currentPartIndex + 1,
                 knownParts: currentParts,
                 autoplay: true
@@ -443,9 +476,9 @@ final class PlayerController: ObservableObject {
         }
         let next =
             playbackOrderMode == .shuffle
-            ? nextShuffledVideo(after: currentVideo)
+            ? nextShuffledVideo(after: currentItem)
             : adjacentPlayingVideo(
-                to: currentVideo,
+                to: currentItem,
                 offset: 1,
                 wrapping: playingPlaylistID != RoamingPlaylist.id
             )
@@ -459,11 +492,11 @@ final class PlayerController: ObservableObject {
             seek(to: 0)
             return
         }
-        guard let currentVideo else { return }
+        guard let currentItem else { return }
         if currentParts.indices.contains(currentPartIndex - 1) {
             updatePlayingResume(partIndex: currentPartIndex - 1, position: 0)
             load(
-                currentVideo,
+                currentItem,
                 partIndex: currentPartIndex - 1,
                 knownParts: currentParts,
                 autoplay: true
@@ -472,9 +505,9 @@ final class PlayerController: ObservableObject {
         }
         let previous =
             playbackOrderMode == .shuffle
-            ? previousShuffledVideo(before: currentVideo)
+            ? previousShuffledVideo(before: currentItem)
             : adjacentPlayingVideo(
-                to: currentVideo,
+                to: currentItem,
                 offset: -1,
                 wrapping: playingPlaylistID != RoamingPlaylist.id
             )
@@ -484,10 +517,10 @@ final class PlayerController: ObservableObject {
     }
 
     private func replayCurrentVideo() {
-        guard let currentVideo else { return }
+        guard let currentItem else { return }
         updatePlayingResume(partIndex: 0, position: 0)
         load(
-            currentVideo,
+            currentItem,
             partIndex: 0,
             knownParts: currentParts.isEmpty ? nil : currentParts,
             autoplay: true
@@ -505,8 +538,13 @@ final class PlayerController: ObservableObject {
     }
 
     func openCurrentVideo() {
-        guard let currentVideo else { return }
-        openVideo(currentVideo)
+        guard let currentItem else { return }
+        openVideo(currentItem)
+    }
+
+    func openVideo(_ item: PlaybackItem) {
+        guard let url = item.webURL else { return }
+        NSWorkspace.shared.open(url)
     }
 
     func openVideo(_ video: VideoSearchResult) {
@@ -515,7 +553,7 @@ final class PlayerController: ObservableObject {
     }
 
     func resumePlayback() {
-        guard currentVideo != nil else { return }
+        guard currentItem != nil else { return }
         if case .failed = playbackState {
             retryCurrentPlayback()
             return
@@ -532,7 +570,7 @@ final class PlayerController: ObservableObject {
         cancelNextPrefetch()
         playbackIntent = false
         player.pause()
-        if currentVideo != nil, playbackState != .resolving {
+        if currentItem != nil, playbackState != .resolving {
             playbackState = .paused
             lastPersistedPosition = elapsed
             updatePlayingResume(partIndex: currentPartIndex, position: elapsed)
@@ -553,7 +591,7 @@ final class PlayerController: ObservableObject {
         audioLevel.reset()
         playbackIntent = false
         setPlayingPlaylistID(nil)
-        currentVideo = nil
+        currentItem = nil
         currentParts = []
         currentPart = nil
         currentPartIndex = 0
@@ -567,9 +605,9 @@ final class PlayerController: ObservableObject {
     }
 
     private func retryCurrentPlayback() {
-        guard let currentVideo else { return }
+        guard let currentItem else { return }
         load(
-            currentVideo,
+            currentItem,
             partIndex: currentPartIndex,
             knownParts: currentParts.isEmpty ? nil : currentParts,
             autoplay: true,
@@ -601,7 +639,7 @@ final class PlayerController: ObservableObject {
         savedPlaylists.update(playlistID, from: playbackQueue)
     }
 
-    private var playingPlaylistItems: [VideoSearchResult] {
+    private var playingPlaylistItems: [PlaybackItem] {
         guard let playingPlaylistID else { return [] }
         if playbackQueue.savedPlaylistID == playingPlaylistID {
             return playbackQueue.items
@@ -610,12 +648,12 @@ final class PlayerController: ObservableObject {
     }
 
     private func adjacentPlayingVideo(
-        to video: VideoSearchResult,
+        to item: PlaybackItem,
         offset: Int,
         wrapping: Bool = false
-    ) -> VideoSearchResult? {
+    ) -> PlaybackItem? {
         let items = playingPlaylistItems
-        guard let index = items.firstIndex(where: { $0.id == video.id }) else { return nil }
+        guard let index = items.firstIndex(where: { $0.id == item.id }) else { return nil }
         let targetIndex = index + offset
         if items.indices.contains(targetIndex) {
             return items[targetIndex]
@@ -624,16 +662,16 @@ final class PlayerController: ObservableObject {
         return offset >= 0 ? items.first : items.last
     }
 
-    private func resetShuffleOrder(startingAt video: VideoSearchResult) {
+    private func resetShuffleOrder(startingAt item: PlaybackItem) {
         guard playbackOrderMode == .shuffle,
             let playingPlaylistID,
-            playingPlaylistItems.contains(where: { $0.id == video.id })
+            playingPlaylistItems.contains(where: { $0.id == item.id })
         else {
             clearShuffleOrder()
             return
         }
         shufflePlaylistID = playingPlaylistID
-        shuffleHistory = [video.id]
+        shuffleHistory = [item.id]
         shuffleCursor = 0
     }
 
@@ -643,7 +681,7 @@ final class PlayerController: ObservableObject {
         shuffleCursor = 0
     }
 
-    private func reconcileShuffleOrder(currentVideo: VideoSearchResult) {
+    private func reconcileShuffleOrder(currentVideo: PlaybackItem) {
         let itemIDs = Set(playingPlaylistItems.map(\.id))
         guard shufflePlaylistID == playingPlaylistID,
             shuffleHistory.allSatisfy(itemIDs.contains),
@@ -655,7 +693,7 @@ final class PlayerController: ObservableObject {
         }
     }
 
-    private func nextShuffledVideo(after currentVideo: VideoSearchResult) -> VideoSearchResult? {
+    private func nextShuffledVideo(after currentVideo: PlaybackItem) -> PlaybackItem? {
         reconcileShuffleOrder(currentVideo: currentVideo)
         let candidates = playingPlaylistItems.filter {
             $0.id != currentVideo.id && $0.id != lastPlayedVideoID
@@ -667,7 +705,7 @@ final class PlayerController: ObservableObject {
         return next
     }
 
-    private func previousShuffledVideo(before currentVideo: VideoSearchResult) -> VideoSearchResult? {
+    private func previousShuffledVideo(before currentVideo: PlaybackItem) -> PlaybackItem? {
         reconcileShuffleOrder(currentVideo: currentVideo)
         guard shuffleCursor > 0 else { return nil }
         shuffleCursor -= 1
@@ -675,7 +713,7 @@ final class PlayerController: ObservableObject {
         return playingPlaylistItems.first(where: { $0.id == previousID })
     }
 
-    private func selectPlayingVideo(_ video: VideoSearchResult) {
+    private func selectPlayingVideo(_ video: PlaybackItem) {
         guard let playingPlaylistID else { return }
         if playbackQueue.savedPlaylistID == playingPlaylistID {
             playbackQueue.select(video)
@@ -690,13 +728,13 @@ final class PlayerController: ObservableObject {
     }
 
     private func updatePlayingResume(partIndex: Int, position: TimeInterval) {
-        guard let playingPlaylistID, let currentVideo else { return }
+        guard let playingPlaylistID, let currentItem else { return }
         if playbackQueue.savedPlaylistID == playingPlaylistID {
             playbackQueue.updateResume(partIndex: partIndex, position: position)
         } else {
             savedPlaylists.updatePlaybackState(
                 playingPlaylistID,
-                currentID: currentVideo.id,
+                currentID: currentItem.id,
                 resumePartIndex: partIndex,
                 resumePosition: position
             )
@@ -722,9 +760,9 @@ final class PlayerController: ObservableObject {
         currentParts.indices.contains(currentPartIndex + 1)
             || (playbackOrderMode == .shuffle
                 ? playingPlaylistItems.contains(where: {
-                    $0.id != currentVideo?.id && $0.id != lastPlayedVideoID
+                    $0.id != currentItem?.id && $0.id != lastPlayedVideoID
                 })
-                : currentVideo.flatMap {
+                : currentItem.flatMap {
                     adjacentPlayingVideo(
                         to: $0,
                         offset: 1,
@@ -734,13 +772,13 @@ final class PlayerController: ObservableObject {
     }
 
     var canGoPrevious: Bool {
-        guard let currentVideo else { return false }
+        guard let currentItem else { return false }
         return elapsed > 0
             || currentParts.indices.contains(currentPartIndex - 1)
             || (playbackOrderMode == .shuffle
                 ? shuffleCursor > 0
                 : adjacentPlayingVideo(
-                    to: currentVideo,
+                    to: currentItem,
                     offset: -1,
                     wrapping: playingPlaylistID != RoamingPlaylist.id
                 ) != nil)
@@ -750,17 +788,19 @@ final class PlayerController: ObservableObject {
         if let currentPart, totalParts > 1 {
             return "P\(currentPart.number)/\(totalParts) · \(currentPart.title)"
         }
-        return currentVideo?.creator ?? ""
+        return currentItem?.creator ?? ""
     }
 
     private func load(
-        _ video: VideoSearchResult,
+        _ requestedItem: PlaybackItem,
         partIndex: Int,
         knownParts: [VideoPart]?,
         autoplay: Bool,
         resumeAt: TimeInterval = 0
     ) {
-        let startsNewVideo = currentVideo?.id != video.id
+        let startsNewVideo = currentItem?.id != requestedItem.id
+        let loadID = UUID()
+        activeLoadID = loadID
         loadTask?.cancel()
         cancelNextPrefetch()
         currentItemStatusObservation?.invalidate()
@@ -771,10 +811,10 @@ final class PlayerController: ObservableObject {
         currentResourceLoader = nil
         audioLevel.reset()
         playbackIntent = autoplay
-        if startsNewVideo, let currentVideo {
-            lastPlayedVideoID = currentVideo.id
+        if startsNewVideo, let currentItem {
+            lastPlayedVideoID = currentItem.id
         }
-        currentVideo = video
+        currentItem = requestedItem
         playbackState = .resolving
         elapsed = max(0, resumeAt)
         lastPersistedPosition = elapsed
@@ -787,34 +827,54 @@ final class PlayerController: ObservableObject {
         }
         notice = nil
         updateNowPlaying()
-        if startsNewVideo || roamingRecommendationSourceID != video.id {
-            requestRoamingRecommendationIfNeeded(for: video)
+        if startsNewVideo || roamingRecommendationSourceID != requestedItem.video.id {
+            requestRoamingRecommendationIfNeeded(for: requestedItem.video)
         }
 
         loadTask = Task { [weak self, service] in
             do {
-                let parts: [VideoPart]
-                if let knownParts {
-                    parts = knownParts
+                let selectedItem: PlaybackItem
+                if requestedItem.part != nil {
+                    selectedItem = requestedItem
                 } else {
-                    parts = try await service.videoParts(for: video)
+                    let parts: [VideoPart]
+                    if let knownParts {
+                        parts = knownParts
+                    } else {
+                        parts = try await service.videoParts(for: requestedItem.video)
+                    }
+                    guard parts.indices.contains(partIndex), !Task.isCancelled else { return }
+                    let expandedItems = PlaybackItem.flatten(
+                        video: requestedItem.video,
+                        parts: parts
+                    )
+                    let requestedSelection = expandedItems[partIndex]
+                    guard let self, self.activeLoadID == loadID else { return }
+                    selectedItem =
+                        self.expandPlayingItem(
+                            requestedItem,
+                            into: expandedItems,
+                            selecting: requestedSelection.id
+                        ) ?? requestedSelection
+                    self.currentItem = selectedItem
                 }
-                guard parts.indices.contains(partIndex), !Task.isCancelled else { return }
-                let part = parts[partIndex]
-                guard self?.currentVideo == video else { return }
-                self?.currentParts = parts
-                self?.currentPartIndex = partIndex
+                guard let part = selectedItem.part,
+                    !Task.isCancelled,
+                    self?.activeLoadID == loadID
+                else { return }
+                self?.currentParts = [part]
+                self?.currentPartIndex = 0
                 self?.currentPart = part
-                self?.totalParts = parts.count
+                self?.totalParts = selectedItem.partCount
                 self?.duration = part.duration
                 self?.elapsed = min(max(0, resumeAt), part.duration)
 
-                let stream = try await service.resolveAudio(for: video, part: part)
-                let headers = await service.playbackHeaders(for: video)
+                let stream = try await service.resolveAudio(for: selectedItem.video, part: part)
+                let headers = await service.playbackHeaders(for: selectedItem.video)
                 guard !Task.isCancelled else { return }
 
                 let cacheKey = AudioCacheKey(
-                    bvid: video.bvid,
+                    bvid: selectedItem.bvid,
                     cid: part.cid,
                     representationID: stream.representationID
                 )
@@ -834,7 +894,9 @@ final class PlayerController: ObservableObject {
                 }
                 let audioTracks = try? await asset.loadTracks(withMediaType: .audio)
                 let item = AVPlayerItem(asset: asset)
-                guard self?.currentVideo == video else { return }
+                guard self?.activeLoadID == loadID,
+                    self?.currentItem?.id == selectedItem.id
+                else { return }
                 if let audioTrack = audioTracks?.first {
                     item.audioMix = self?.audioLevel.makeAudioMix(for: audioTrack)
                 }
@@ -859,8 +921,66 @@ final class PlayerController: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
-                guard !Task.isCancelled, self?.currentVideo == video else { return }
+                guard !Task.isCancelled, self?.activeLoadID == loadID else { return }
                 self?.handlePlaybackFailure(error.localizedDescription)
+            }
+        }
+    }
+
+    private func expandPlayingItem(
+        _ placeholder: PlaybackItem,
+        into expandedItems: [PlaybackItem],
+        selecting selectedID: String
+    ) -> PlaybackItem? {
+        guard let playingPlaylistID else { return nil }
+        if playbackQueue.savedPlaylistID == playingPlaylistID {
+            return playbackQueue.expand(
+                placeholder,
+                into: expandedItems,
+                selecting: selectedID
+            )
+        }
+        return savedPlaylists.expand(
+            placeholder,
+            into: expandedItems,
+            selecting: selectedID,
+            in: playingPlaylistID
+        )
+    }
+
+    private func resolveQueuedItemIfNeeded(
+        _ placeholder: PlaybackItem,
+        in requestedPlaylistID: UUID? = nil
+    ) {
+        guard placeholder.part == nil else { return }
+        let playlistID = requestedPlaylistID ?? playbackQueue.savedPlaylistID
+        Task { [weak self, service] in
+            do {
+                let parts = try await service.videoParts(for: placeholder.video)
+                try Task.checkCancellation()
+                let expandedItems = PlaybackItem.flatten(
+                    video: placeholder.video,
+                    parts: parts
+                )
+                guard let self else { return }
+                if self.playbackQueue.savedPlaylistID == playlistID,
+                    self.playbackQueue.items.contains(where: { $0.id == placeholder.id })
+                {
+                    _ = self.playbackQueue.expand(
+                        placeholder,
+                        into: expandedItems,
+                        selecting: nil
+                    )
+                } else if let playlistID {
+                    _ = self.savedPlaylists.expand(
+                        placeholder,
+                        into: expandedItems,
+                        selecting: nil,
+                        in: playlistID
+                    )
+                }
+            } catch {
+                return
             }
         }
     }
@@ -881,7 +1001,7 @@ final class PlayerController: ObservableObject {
     }
 
     func handlePlaybackFailure(_ message: String) {
-        guard currentVideo != nil else { return }
+        guard currentItem != nil else { return }
         cancelNextPrefetch()
         playbackIntent = false
         player.pause()
@@ -901,22 +1021,26 @@ final class PlayerController: ObservableObject {
         nextPrefetchTask = Task { [service, audioCache] in
             do {
                 let part: VideoPart
-                if let knownPart = target.part {
+                if let knownPart = target.item.part {
                     part = knownPart
                 } else {
-                    guard let firstPart = try await service.videoParts(for: target.video).first else {
+                    guard
+                        let firstPart = try await service.videoParts(
+                            for: target.item.video
+                        ).first
+                    else {
                         return
                     }
                     part = firstPart
                 }
                 try Task.checkCancellation()
-                let stream = try await service.resolveAudio(for: target.video, part: part)
-                let headers = await service.playbackHeaders(for: target.video)
+                let stream = try await service.resolveAudio(for: target.item.video, part: part)
+                let headers = await service.playbackHeaders(for: target.item.video)
                 try Task.checkCancellation()
                 try await audioCache.prefetch(
                     AudioCacheSource(
                         key: AudioCacheKey(
-                            bvid: target.video.bvid,
+                            bvid: target.item.bvid,
                             cid: part.cid,
                             representationID: stream.representationID
                         ),
@@ -938,36 +1062,30 @@ final class PlayerController: ObservableObject {
     }
 
     private func nextAudioPrefetchTarget() -> AudioPrefetchTarget? {
-        guard let currentVideo else { return nil }
-        if currentParts.indices.contains(currentPartIndex + 1) {
-            return AudioPrefetchTarget(
-                video: currentVideo,
-                part: currentParts[currentPartIndex + 1]
-            )
-        }
+        guard let currentItem else { return nil }
         guard playbackOrderMode == .repeatAll,
             let nextVideo = adjacentPlayingVideo(
-                to: currentVideo,
+                to: currentItem,
                 offset: 1,
                 wrapping: playingPlaylistID != RoamingPlaylist.id
             ),
-            nextVideo.id != currentVideo.id
+            nextVideo.id != currentItem.id
         else { return nil }
-        return AudioPrefetchTarget(video: nextVideo, part: nil)
+        return AudioPrefetchTarget(item: nextVideo)
     }
 
     private func requestRoamingRecommendationIfNeeded(
         for video: VideoSearchResult? = nil
     ) {
-        let requestedVideo = video ?? currentVideo
+        let requestedVideo = video ?? currentItem?.video
         guard let requestedVideo else { return }
         let requestedVideoID = requestedVideo.id
         let isPlayingRoamingVideo =
             playingPlaylistID == RoamingPlaylist.id
-            && currentVideo?.id == requestedVideoID
+            && currentItem?.video.id == requestedVideoID
         let isBrowsingRoamingVideo =
             playbackQueue.isRoaming
-            && playbackQueue.currentID == requestedVideoID
+            && playbackQueue.current?.video.id == requestedVideoID
         guard isPlayingRoamingVideo || isBrowsingRoamingVideo else { return }
         if pendingRoamingRecommendationReplacementSourceID != nil,
             pendingRoamingRecommendationReplacementSourceID != requestedVideoID
@@ -984,17 +1102,21 @@ final class PlayerController: ObservableObject {
                 else { return }
                 let stillPlayingRoamingVideo =
                     self.playingPlaylistID == RoamingPlaylist.id
-                    && self.currentVideo?.id == requestedVideoID
+                    && self.currentItem?.video.id == requestedVideoID
                 let stillBrowsingRoamingVideo =
                     self.playbackQueue.isRoaming
-                    && self.playbackQueue.currentID == requestedVideoID
+                    && self.playbackQueue.current?.video.id == requestedVideoID
                 guard stillPlayingRoamingVideo || stillBrowsingRoamingVideo else { return }
 
                 self.roamingRecommendationSourceID = requestedVideoID
                 self.roamingRecommendations = recommendations
                 self.roamingRecommendationCursor =
                     self.roamingNextVideo(after: requestedVideoID)
-                    .flatMap { next in recommendations.firstIndex(where: { $0.id == next.id }) }
+                    .flatMap { next in
+                        recommendations.firstIndex(where: {
+                            $0.id == next.video.id
+                        })
+                    }
                     ?? -1
                 self.fillRoamingNextIfMissing(after: requestedVideoID)
                 if self.pendingRoamingRecommendationReplacementSourceID == requestedVideoID {
@@ -1016,23 +1138,26 @@ final class PlayerController: ObservableObject {
             playbackQueue.savedPlaylistID == RoamingPlaylist.id
             ? playbackQueue.items
             : savedPlaylists.roamingPlaylist.items
-        let excludedIDs = Set(items.map(\.id))
+        let excludedIDs = Set(items.map(\.video.id))
         guard let candidate = nextRoamingRecommendation(excluding: excludedIDs) else { return }
+        guard let currentItemID = roamingCurrentItemID(for: currentID) else { return }
+        let candidateItem = PlaybackItem(video: candidate.video)
 
         let inserted: Bool
         if playbackQueue.savedPlaylistID == RoamingPlaylist.id {
             inserted = playbackQueue.insertRoamingNextIfMissing(
-                candidate.video,
-                after: currentID
+                candidateItem,
+                after: currentItemID
             )
         } else {
             inserted = savedPlaylists.insertRoamingNextIfMissing(
-                candidate.video,
-                after: currentID
+                candidateItem,
+                after: currentItemID
             )
         }
         if inserted {
             roamingRecommendationCursor = candidate.index
+            resolveQueuedItemIfNeeded(candidateItem, in: RoamingPlaylist.id)
         }
     }
 
@@ -1057,19 +1182,36 @@ final class PlayerController: ObservableObject {
         pendingRoamingRecommendationReplacementSourceID = nil
     }
 
-    private func roamingNextVideo(after currentID: String) -> VideoSearchResult? {
-        let items: [VideoSearchResult]
-        let storedCurrentID: String?
+    private func roamingNextVideo(after currentID: String) -> PlaybackItem? {
+        let items: [PlaybackItem]
+        let storedCurrentItem: PlaybackItem?
         if playbackQueue.savedPlaylistID == RoamingPlaylist.id {
             items = playbackQueue.items
-            storedCurrentID = playbackQueue.currentID
+            storedCurrentItem = playbackQueue.current
         } else {
             let roaming = savedPlaylists.roamingPlaylist
             items = roaming.items
-            storedCurrentID = roaming.currentID
+            storedCurrentItem = roaming.currentID.flatMap { id in
+                roaming.items.first(where: { $0.id == id })
+            }
         }
-        guard storedCurrentID == currentID else { return nil }
-        return RoamingPlaylist.next(in: items, currentID: currentID)
+        guard storedCurrentItem?.video.id == currentID,
+            let storedCurrentItem
+        else { return nil }
+        return RoamingPlaylist.next(in: items, currentID: storedCurrentItem.id)
+    }
+
+    private func roamingCurrentItemID(for videoID: String) -> String? {
+        if playbackQueue.savedPlaylistID == RoamingPlaylist.id {
+            return playbackQueue.current?.video.id == videoID
+                ? playbackQueue.currentID
+                : nil
+        }
+        let roaming = savedPlaylists.roamingPlaylist
+        guard let currentID = roaming.currentID,
+            roaming.items.first(where: { $0.id == currentID })?.video.id == videoID
+        else { return nil }
+        return currentID
     }
 
     private func installObservers() {
@@ -1118,10 +1260,16 @@ final class PlayerController: ObservableObject {
             forName: .AVPlayerItemDidPlayToEndTime,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
+        ) { [weak self] notification in
+            let endedItemID = (notification.object as? AVPlayerItem).map(ObjectIdentifier.init)
             Task { @MainActor in
                 guard let self else { return }
-                if self.playbackOrderMode == .repeatOne, self.currentVideo != nil {
+                if let endedItemID,
+                    self.player.currentItem.map(ObjectIdentifier.init) != endedItemID
+                {
+                    return
+                }
+                if self.playbackOrderMode == .repeatOne, self.currentItem != nil {
                     if self.currentParts.indices.contains(self.currentPartIndex + 1) {
                         self.playNext()
                     } else {
@@ -1183,7 +1331,7 @@ final class PlayerController: ObservableObject {
     }
 
     private func handleTimeControlStatus(_ status: AVPlayer.TimeControlStatus) {
-        guard currentVideo != nil else { return }
+        guard currentItem != nil else { return }
         switch status {
         case .waitingToPlayAtSpecifiedRate where playbackIntent:
             cancelNextPrefetch()
@@ -1204,26 +1352,25 @@ final class PlayerController: ObservableObject {
     }
 
     private func updateNowPlaying() {
-        guard let currentVideo else {
+        guard let currentItem else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             MPNowPlayingInfoCenter.default().playbackState = .stopped
             return
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = [
-            MPMediaItemPropertyTitle: currentVideo.title,
-            MPMediaItemPropertyArtist: currentVideo.creator,
+            MPMediaItemPropertyTitle: currentItem.title,
+            MPMediaItemPropertyArtist: currentItem.creator,
             MPMediaItemPropertyPlaybackDuration: duration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsed,
             MPNowPlayingInfoPropertyPlaybackRate: playbackState.isPlaying ? 1.0 : 0.0,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
             MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue,
-            MPNowPlayingInfoPropertyExternalContentIdentifier: currentVideo.bvid,
+            MPNowPlayingInfoPropertyExternalContentIdentifier: currentItem.bvid,
         ]
         MPNowPlayingInfoCenter.default().playbackState = playbackState.isPlaying ? .playing : .paused
     }
 }
 
 private struct AudioPrefetchTarget: Sendable {
-    let video: VideoSearchResult
-    let part: VideoPart?
+    let item: PlaybackItem
 }

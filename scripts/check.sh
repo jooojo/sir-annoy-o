@@ -107,6 +107,12 @@ if file_contains 'seekAction: { controller.seekAndResume' Sources/AnnoyO/MenuBar
 else
     echo "PASS: scrub completion preserves playback state"
 fi
+if file_contains 'guard role == .regular else { return false }' Sources/AnnoyO/MenuBarView.swift; then
+    echo "FAILED: roaming current row rejects active progress scrubbing" >&2
+    ui_contract_failed=1
+else
+    echo "PASS: roaming current row allows active progress scrubbing"
+fi
 if (( ui_contract_failed )); then
     exit 1
 fi

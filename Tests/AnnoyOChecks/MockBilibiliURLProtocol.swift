@@ -85,12 +85,22 @@ final class MockBilibiliURLProtocol: URLProtocol, @unchecked Sendable {
                 """
         case "/x/player/pagelist":
             let bvid = queryValue(named: "bvid", in: url) ?? "BV1MOCK"
-            let cid = bvid == "BV1PREFETCHFIRST" ? 101 : 102
-            responseBody = """
-                {"code":0,"message":"0","data":[
-                  {"cid":\(cid),"page":1,"part":"\(bvid)","duration":120}
-                ]}
-                """
+            if bvid == "BV1MULTIPART" {
+                responseBody = """
+                    {"code":0,"message":"0","data":[
+                      {"cid":201,"page":1,"part":"第一段","duration":60},
+                      {"cid":202,"page":2,"part":"第二段","duration":61},
+                      {"cid":203,"page":3,"part":"第三段","duration":62}
+                    ]}
+                    """
+            } else {
+                let cid = bvid == "BV1PREFETCHFIRST" ? 101 : 102
+                responseBody = """
+                    {"code":0,"message":"0","data":[
+                      {"cid":\(cid),"page":1,"part":"\(bvid)","duration":120}
+                    ]}
+                    """
+            }
         case "/x/player/wbi/playurl":
             let bvid = queryValue(named: "bvid", in: url) ?? "BV1MOCK"
             responseBody = """
